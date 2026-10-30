@@ -3,37 +3,33 @@ import {
   TranslationResult,
   TranscriptionResult
 } from '../types';
+import { TranscriptionService } from './transcription.service';
+import { TranslationService } from './translation.service';
 
 export class AIService {
-  // Mocking AI Translation for the UI demo
-  // In production, this would call OpenAI GPT-4 or DeepL API
+  /**
+   * OpenAI API Key configuration:
+   * Loaded securely from .env.local via process.env.NEXT_PUBLIC_OPENAI_API_KEY
+   */
+  static getApiKey(): string {
+    return process.env.NEXT_PUBLIC_OPENAI_API_KEY || '';
+  }
+
   static async translateText(text: string, targetLang: string): Promise<TranslationResult> {
-    const mockTranslations: Record<string, Record<string, string>> = {
-      'es': { 'Welcome to the future of video!': '¡Bienvenido al futuro del video!', 'Break the sound barrier today.': 'Rompe la barrera del sonido hoy.' },
-      'hi': { 'Welcome to the future of video!': 'वीडियो के भविष्य में आपका स्वागत है!', 'Break the sound barrier today.': 'आज ही ध्वनि की बाधा को तोड़ें।' },
-      'fr': { 'Welcome to the future of video!': 'Bienvenue dans le futur de la vidéo!', 'Break the sound barrier today.': 'Brisez la barrière du son aujourd\'hui.' },
-      'de': { 'Welcome to the future of video!': 'Willkommen in der Zukunft des Videos!', 'Break the sound barrier today.': 'Durchbrechen Sie heute die Schallmauer.' },
-    };
-
-    await new Promise(resolve => setTimeout(resolve, 800)); // Simulate network latency
-
-    const translation = mockTranslations[targetLang]?.[text] || `[${targetLang}] ${text}`;
+    const translated = await TranslationService.translateText(text, targetLang);
     return {
-      translatedText: translation,
+      translatedText: translated,
       detectedLanguage: 'en',
-      confidence: 0.98
+      confidence: 0.98,
     };
   }
 
-  static async transcribeAudio(blob: Blob): Promise<TranscriptionResult> {
-    // In production, this would use OpenAI Whisper via API
-    await new Promise(resolve => setTimeout(resolve, 2000));
+  static async transcribeAudio(blob: Blob, apiKey?: string): Promise<TranscriptionResult> {
+    const key = apiKey || this.getApiKey();
+    const captions = await TranscriptionService.transcribeMedia(blob, 15, key);
     return {
-      captions: [
-        { start: 0, end: 2, text: "Welcome to the future of video!", lang: "en" },
-        { start: 2, end: 5, text: "Break the sound barrier today.", lang: "en" },
-      ],
-      duration: 5.0
+      captions: captions.map(({ id, ...rest }) => rest),
+      duration: captions.length > 0 ? captions[captions.length - 1].end : 5.0,
     };
   }
 }

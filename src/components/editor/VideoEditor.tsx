@@ -54,7 +54,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isTranslating, setIsTranslating] = useState(false);
   const [transcriptionStatus, setTranscriptionStatus] = useState('');
-  const [whisperApiKey, setWhisperApiKey] = useState('');
+  const [whisperApiKey, setWhisperApiKey] = useState(() => process.env.NEXT_PUBLIC_OPENAI_API_KEY || '');
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [savedProjects, setSavedProjects] = useState<Project[]>([]);
   const [saveToast, setSaveToast] = useState(false);
@@ -845,7 +845,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
         {activeTab === 'settings' && (
           <div className="flex-1 overflow-y-auto p-4 space-y-6 text-xs">
             <div className="space-y-2">
-              <label className="text-[10px] uppercase font-bold text-gray-400 block">OpenAI Whisper API Key (Optional)</label>
+              <label className="text-[10px] uppercase font-bold text-gray-400 block"></label>
               <input
                 type="password"
                 placeholder="sk-..."
@@ -853,9 +853,6 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
                 onChange={(e) => setWhisperApiKey(e.target.value)}
                 className="w-full bg-white/5 border border-white/10 rounded-xl p-2.5 text-xs text-white outline-none focus:border-brand-primary"
               />
-              <p className="text-[10px] text-gray-500 leading-normal">
-                Leave blank to use the free built-in in-browser Web Speech API and smart simulation.
-              </p>
             </div>
           </div>
         )}

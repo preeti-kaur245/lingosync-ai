@@ -70,8 +70,9 @@ export class TranscriptionService {
     videoDuration: number,
     apiKey?: string
   ): Promise<Caption[]> {
-    if (apiKey) {
-      return this.transcribeWithWhisper(file, apiKey);
+    const key = apiKey || process.env.NEXT_PUBLIC_OPENAI_API_KEY;
+    if (key) {
+      return this.transcribeWithWhisper(file, key);
     }
 
     // High quality intelligent auto-transcription simulation

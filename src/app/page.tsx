@@ -29,7 +29,7 @@ const Navbar = () => (
   </nav>
 );
 
-const Hero = ({ onStart }) => (
+const Hero = ({ onStart }: { onStart: () => void }) => (
   <section className="relative pt-40 pb-20 px-6 flex flex-col items-center text-center max-w-6xl mx-auto">
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -83,7 +83,17 @@ const Hero = ({ onStart }) => (
   </section>
 );
 
-const FeatureCard = ({ icon: Icon, title, description, index }) => (
+const FeatureCard = ({
+  icon: Icon,
+  title,
+  description,
+  index,
+}: {
+  icon: React.ElementType;
+  title: string;
+  description: string;
+  index: number;
+}) => (
   <motion.div
     initial={{ opacity: 0, y: 30 }}
     whileInView={{ opacity: 1, y: 0 }}

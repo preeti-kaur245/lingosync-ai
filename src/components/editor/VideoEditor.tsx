@@ -26,7 +26,7 @@ const VideoEditor = () => {
     { id: 1, start: 0, end: 2, text: "Welcome to the future of video!", lang: "en" },
     { id: 2, start: 2, end: 5, text: "Break the sound barrier today.", lang: "en" },
   ]);
-  const [selectedCaption, setSelectedCaption] = useState(null);
+  const [selectedCaption, setSelectedCaption] = useState<number | string | null>(null);
   const [isTranslating, setIsTranslating] = useState(false);
   const [targetLang, setTargetLang] = useState('es');
 
@@ -268,7 +268,15 @@ const VideoEditor = () => {
   );
 };
 
-const ToolButton = ({ icon: Icon, active, label }) => (
+const ToolButton = ({
+  icon: Icon,
+  active = false,
+  label,
+}: {
+  icon: React.ElementType;
+  active?: boolean;
+  label: string;
+}) => (
   <div className="group relative flex items-center justify-center">
     <button className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all ${active ? 'bg-brand-primary text-white' : 'text-gray-500 hover:bg-white/10 hover:text-white'}`}>
       <Icon size={20} />

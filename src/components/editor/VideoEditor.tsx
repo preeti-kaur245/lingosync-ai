@@ -5,16 +5,24 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Maximize2,
   Type, Palette, Languages, Download, ArrowLeft, Trash2, Plus,
-  Sparkles, Loader2, Copy, Check, Settings, FolderKanban, Clock
+  Sparkles, Loader2, Copy, Check, Settings, FolderKanban, Clock, Scissors, Film
 } from 'lucide-react';
-import { Caption, Project, SubtitleStyle, AspectRatio } from '@/types';
+import {
+  Caption, Project, SubtitleStyle, AspectRatio,
+  ClipConfig, ShortClip, CandidateClip, ClipGenerationStage
+} from '@/types';
 import { STYLE_PRESETS, AVAILABLE_FONTS, FontService } from '@/services/font.service';
 import { SUPPORTED_LANGUAGES, TranslationService } from '@/services/translation.service';
 import { TranscriptionService } from '@/services/transcription.service';
 import { SubtitleLayoutService } from '@/services/subtitleLayout.service';
 import { VideoMetadataService } from '@/services/videoMetadata.service';
+import { ClipSelectorService } from '@/services/clipSelector.service';
+import { ClipGeneratorService } from '@/services/clipGenerator.service';
 import { storageService } from '@/services/storage.service';
 import { ExportModal } from './ExportModal';
+import { ClipConfigModal } from '@/components/clips/ClipConfigModal';
+import { ClipProgressModal } from '@/components/clips/ClipProgressModal';
+import { ClipGalleryModal } from '@/components/clips/ClipGalleryModal';
 
 interface VideoEditorProps {
   initialProject?: Project;
@@ -73,6 +81,23 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
   const [containerDimensions, setContainerDimensions] = useState<{ width: number; height: number }>({
     width: 640,
     height: 360,
+  });
+
+  // Short Clips Generator State
+  const [isClipConfigOpen, setIsClipConfigOpen] = useState(false);
+  const [isClipProgressOpen, setIsClipProgressOpen] = useState(false);
+  const [isClipGalleryOpen, setIsClipGalleryOpen] = useState(false);
+  const [generatedClips, setGeneratedClips] = useState<ShortClip[]>([]);
+  const [currentClipConfig, setCurrentClipConfig] = useState<ClipConfig | null>(null);
+  const [currentRenderingTitle, setCurrentRenderingTitle] = useState('');
+  const [clipStage, setClipStage] = useState<ClipGenerationStage>({
+    step: 1,
+    totalSteps: 9,
+    title: 'Preparing transcript',
+    detail: 'Checking word timestamps and boundaries...',
+    completedClips: 0,
+    totalClips: 3,
+    failedClips: 0,
   });
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -367,6 +392,247 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
     await handleLanguageChange(project.targetLang);
   };
 
+  // --- AI Short Clips Generation Pipeline ---
+  const handleStartClipGeneration = async (config: ClipConfig) => {
+    setIsClipConfigOpen(false);
+    setIsClipProgressOpen(true);
+    setCurrentClipConfig(config);
+
+    setClipStage({
+      step: 1,
+      totalSteps: 9,
+      title: 'Preparing transcript',
+      detail: 'Verifying transcript text and speech timestamps...',
+      completedClips: 0,
+      totalClips: config.numClips,
+      failedClips: 0,
+    });
+
+    try {
+      // 1. Ensure transcript exists. If missing, transcribe first!
+      let activeCaptions = project.captions;
+      if (!activeCaptions || activeCaptions.length === 0) {
+        setClipStage((prev) => ({
+          ...prev,
+          step: 1,
+          detail: 'No transcript detected. Transcribing video audio first...',
+        }));
+
+        let mediaBlob: Blob = new Blob([]);
+        if (project.videoUrl) {
+          try {
+            const res = await fetch(project.videoUrl);
+            if (res.ok) mediaBlob = await res.blob();
+          } catch (e) {
+            console.warn('Could not fetch media blob:', e);
+          }
+        }
+
+        activeCaptions = await TranscriptionService.transcribeMedia(
+          mediaBlob,
+          duration,
+          whisperApiKey || undefined,
+          project.sourceLang
+        );
+
+        setProject((prev) => ({
+          ...prev,
+          captions: activeCaptions,
+          originalCaptions: activeCaptions,
+        }));
+      }
+
+      // 2. Finding candidate highlights
+      setClipStage((prev) => ({
+        ...prev,
+        step: 2,
+        title: 'Finding candidate highlights',
+        detail: `Analyzing transcript for ${config.criteria} moments between ${config.durationOption}s...`,
+      }));
+
+      const candidates = await ClipSelectorService.selectCandidates(
+        activeCaptions,
+        duration,
+        config
+      );
+
+      if (candidates.length === 0) {
+        throw new Error('No candidate segments found within the requested duration limits.');
+      }
+
+      // 3. Scoring and validating candidates
+      setClipStage((prev) => ({
+        ...prev,
+        step: 3,
+        title: 'Scoring & validating candidates',
+        detail: `Programmatically validating boundaries for ${candidates.length} candidate clips...`,
+        totalClips: candidates.length,
+      }));
+
+      await new Promise((r) => setTimeout(r, 600));
+
+      // 4 to 8. Render clips sequentially
+      const renderedClips: ShortClip[] = [];
+      let completedCount = 0;
+      let failedCount = 0;
+
+      for (let i = 0; i < candidates.length; i++) {
+        const candidate = candidates[i];
+        setCurrentRenderingTitle(candidate.title);
+
+        setClipStage((prev) => ({
+          ...prev,
+          step: 4 + Math.min(4, Math.floor((i / candidates.length) * 4)),
+          title: `Rendering Clip ${i + 1} of ${candidates.length}`,
+          detail: `Reframing to ${config.aspectRatio} and burning subtitles: "${candidate.title}"`,
+        }));
+
+        if (!videoRef.current) {
+          throw new Error('Video player is not initialized for rendering.');
+        }
+
+        try {
+          const finishedClip = await ClipGeneratorService.renderClip(
+            candidate,
+            config,
+            activeCaptions,
+            videoRef.current,
+            (pct, stageText) => {
+              setClipStage((prev) => ({
+                ...prev,
+                detail: `Clip ${i + 1}/${candidates.length}: ${stageText}`,
+              }));
+            }
+          );
+          renderedClips.push(finishedClip);
+          completedCount++;
+        } catch (err) {
+          console.error(`Clip ${i + 1} render failed:`, err);
+          failedCount++;
+          renderedClips.push({
+            ...candidate,
+            captions: ClipGeneratorService.retimeCaptions(activeCaptions, candidate.start, candidate.end),
+            status: 'failed',
+            progress: 0,
+            error: (err as any).message || 'Render failed',
+            aspectRatio: config.aspectRatio === '9:16' ? '9:16' : config.aspectRatio === '1:1' ? '1:1' : '16:9',
+          });
+        }
+
+        setClipStage((prev) => ({
+          ...prev,
+          completedClips: completedCount,
+          failedClips: failedCount,
+        }));
+      }
+
+      // 9. Generation complete
+      setClipStage((prev) => ({
+        ...prev,
+        step: 9,
+        title: 'Generation Complete!',
+        detail: `Successfully created ${completedCount} short clips ready for download.`,
+      }));
+
+      setGeneratedClips(renderedClips);
+      await new Promise((r) => setTimeout(r, 900));
+      setIsClipProgressOpen(false);
+      setIsClipGalleryOpen(true);
+    } catch (err: any) {
+      console.error('Clip generation pipeline error:', err);
+      alert('Short clips generation failed: ' + (err.message || 'Unknown error'));
+      setIsClipProgressOpen(false);
+    }
+  };
+
+  const handleDownloadClip = (clip: ShortClip) => {
+    if (!clip.videoBlobUrl) return;
+    const a = document.createElement('a');
+    a.href = clip.videoBlobUrl;
+    a.download = `${clip.title.replace(/[^a-zA-Z0-9_-]/g, '_')}_${clip.aspectRatio.replace(':', '_')}.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const handleDownloadAllClips = () => {
+    const ready = generatedClips.filter((c) => c.status === 'ready' && c.videoBlobUrl);
+    ready.forEach((clip, idx) => {
+      setTimeout(() => {
+        handleDownloadClip(clip);
+      }, idx * 600);
+    });
+  };
+
+  const handleDeleteClip = (clipId: string) => {
+    setGeneratedClips((prev) => prev.filter((c) => c.id !== clipId));
+  };
+
+  const handleRegenerateClip = async (clip: ShortClip) => {
+    if (!videoRef.current || !currentClipConfig) return;
+    try {
+      const updated = await ClipGeneratorService.renderClip(
+        clip,
+        currentClipConfig,
+        project.captions,
+        videoRef.current,
+        () => {}
+      );
+      setGeneratedClips((prev) => prev.map((c) => (c.id === clip.id ? updated : c)));
+    } catch (err: any) {
+      alert('Failed to rerender clip: ' + err.message);
+    }
+  };
+
+  const handleUpdateClipBoundaries = async (clipId: string, newStart: number, newEnd: number) => {
+    const target = generatedClips.find((c) => c.id === clipId);
+    if (!target || !videoRef.current || !currentClipConfig) return;
+
+    const modifiedCandidate: CandidateClip = {
+      ...target,
+      start: newStart,
+      end: newEnd,
+      duration: parseFloat((newEnd - newStart).toFixed(1)),
+      reason: 'User adjusted boundaries',
+    };
+
+    try {
+      const rerendered = await ClipGeneratorService.renderClip(
+        modifiedCandidate,
+        currentClipConfig,
+        project.captions,
+        videoRef.current,
+        () => {}
+      );
+      setGeneratedClips((prev) => prev.map((c) => (c.id === clipId ? rerendered : c)));
+    } catch (err: any) {
+      alert('Failed to rerender clip: ' + err.message);
+    }
+  };
+
+  const handleRestyleClip = async (clipId: string, newStyle: SubtitleStyle) => {
+    const target = generatedClips.find((c) => c.id === clipId);
+    if (!target || !videoRef.current || !currentClipConfig) return;
+
+    const restyledConfig: ClipConfig = {
+      ...currentClipConfig,
+      subtitleStyle: newStyle,
+    };
+
+    try {
+      const rerendered = await ClipGeneratorService.renderClip(
+        target,
+        restyledConfig,
+        project.captions,
+        videoRef.current,
+        () => {}
+      );
+      setGeneratedClips((prev) => prev.map((c) => (c.id === clipId ? rerendered : c)));
+    } catch (err: any) {
+      alert('Failed to restyle clip: ' + err.message);
+    }
+  };
+
   // Active caption
   const activeCaption = project.captions.find((c) => currentTime >= c.start && currentTime <= c.end);
 
@@ -438,6 +704,13 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
 
         <div className="mt-auto flex flex-col gap-3">
           <button
+            onClick={() => setIsClipConfigOpen(true)}
+            className="w-11 h-11 rounded-2xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 flex items-center justify-center text-amber-400 hover:scale-105 transition-transform"
+            title="Generate AI Short Clips"
+          >
+            <Scissors size={18} />
+          </button>
+          <button
             onClick={() => setIsExportModalOpen(true)}
             className="w-11 h-11 rounded-2xl bg-gradient-to-br from-brand-primary to-brand-secondary flex items-center justify-center text-white shadow-lg shadow-brand-primary/30 hover:scale-105 transition-transform"
             title="Export Video / Subtitles"
@@ -483,11 +756,31 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
             {isLocalWhisperConnected && (
               <div
                 title="Faster-Whisper local server is connected at http://127.0.0.1:8000"
-                className="hidden md:flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[11px] font-bold"
+                className="hidden xl:flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[11px] font-bold"
               >
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                 <span>Faster-Whisper AI</span>
               </div>
+            )}
+
+            {/* AI Short Clips Button */}
+            <button
+              onClick={() => setIsClipConfigOpen(true)}
+              className="glow-button px-3.5 sm:px-4 py-1.5 rounded-full bg-gradient-to-r from-amber-500 via-brand-primary to-brand-secondary hover:brightness-110 text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-md shadow-brand-primary/20 group"
+              title="Generate Short Clips for Shorts, Reels, and TikTok"
+            >
+              <Scissors size={14} className="group-hover:rotate-12 transition-transform text-amber-200" />
+              <span>Generate Short Clips</span>
+            </button>
+
+            {generatedClips.length > 0 && (
+              <button
+                onClick={() => setIsClipGalleryOpen(true)}
+                className="px-3 py-1.5 rounded-full bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/30 text-emerald-400 text-xs font-bold flex items-center gap-1.5 transition-all"
+              >
+                <Film size={13} />
+                <span>Clips ({generatedClips.filter((c) => c.status === 'ready').length})</span>
+              </button>
             )}
 
             <button
@@ -501,7 +794,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
 
             <button
               onClick={() => setIsExportModalOpen(true)}
-              className="glow-button px-4 sm:px-5 py-1.5 rounded-full bg-brand-primary text-white text-xs font-bold flex items-center gap-1.5 transition-all"
+              className="px-4 sm:px-5 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-white text-xs font-bold flex items-center gap-1.5 transition-all"
             >
               <Download size={14} />
               <span>Export</span>
@@ -1309,6 +1602,36 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
         style={project.style}
         projectTitle={project.title}
         aspectRatio={project.aspectRatio}
+      />
+
+      {/* Short Clips Configuration Modal */}
+      <ClipConfigModal
+        isOpen={isClipConfigOpen}
+        onClose={() => setIsClipConfigOpen(false)}
+        onStartGeneration={handleStartClipGeneration}
+        currentStyle={project.style}
+        videoDuration={duration}
+      />
+
+      {/* Short Clips Multi-Stage Progress Modal */}
+      <ClipProgressModal
+        isOpen={isClipProgressOpen}
+        stage={clipStage}
+        currentClipIndex={clipStage.completedClips + 1}
+        currentClipTitle={currentRenderingTitle}
+      />
+
+      {/* Short Clips Review Gallery Modal */}
+      <ClipGalleryModal
+        isOpen={isClipGalleryOpen}
+        onClose={() => setIsClipGalleryOpen(false)}
+        clips={generatedClips}
+        onDownloadClip={handleDownloadClip}
+        onDownloadAll={handleDownloadAllClips}
+        onDeleteClip={handleDeleteClip}
+        onRegenerateClip={handleRegenerateClip}
+        onUpdateBoundaries={handleUpdateClipBoundaries}
+        onRestyleClip={handleRestyleClip}
       />
     </div>
   );

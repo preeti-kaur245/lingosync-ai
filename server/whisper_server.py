@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-LingoSync AI - Local Faster-Whisper Transcription Server
-High-performance local voice-to-text generation with word-level timestamps.
-Powered by faster-whisper (CTranslate2 + PyAV).
+LingoSync AI - Local AI Backend Server
+1. Fast local voice-to-text with word-level timestamps (faster-whisper)
+2. Native FFmpeg video cutting & reframing for short clips (imageio-ffmpeg)
 """
 
 import sys
@@ -10,6 +10,7 @@ import os
 import json
 import tempfile
 import argparse
+import subprocess
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.parse
 
@@ -18,6 +19,12 @@ try:
 except ImportError:
     print("Error: faster-whisper is not installed. Please install it using: pip install faster-whisper")
     sys.exit(1)
+
+try:
+    import imageio_ffmpeg
+    FFMPEG_EXE = imageio_ffmpeg.get_ffmpeg_exe()
+except Exception:
+    FFMPEG_EXE = "ffmpeg"
 
 # Global model cache to avoid re-allocating memory on every request
 LOADED_MODELS = {}
@@ -33,6 +40,55 @@ def get_model(model_size=DEFAULT_MODEL_SIZE, device=DEFAULT_DEVICE, compute_type
         LOADED_MODELS[key] = WhisperModel(model_size, device=device, compute_type=compute_type)
         print(f"[Faster-Whisper] Model '{model_size}' ready.")
     return LOADED_MODELS[key]
+
+
+def render_ffmpeg_clip(input_path, output_path, start, end, aspect_ratio="9:16", reframing="center_crop"):
+    """
+    Cut and reframe video segment using FFmpeg
+    """
+    cmd = [
+        FFMPEG_EXE,
+        "-y",
+        "-ss", str(start),
+        "-to", str(end),
+        "-i", input_path,
+    ]
+
+    # Video filter chain
+    if aspect_ratio == "9:16":
+        if reframing == "blurred_background":
+            cmd += [
+                "-filter_complex",
+                "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:5[bg];"
+                "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease[fg];"
+                "[bg][fg]overlay=(W-w)/2:(H-h)/2",
+            ]
+        else:
+            # Center crop to 9:16
+            cmd += [
+                "-vf",
+                "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=1080:1920",
+            ]
+    elif aspect_ratio == "1:1":
+        cmd += [
+            "-vf",
+            "crop=min(iw\\,ih):min(iw\\,ih),scale=1080:1080",
+        ]
+
+    cmd += [
+        "-c:v", "libx264",
+        "-preset", "fast",
+        "-crf", "22",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-movflags", "+faststart",
+        output_path,
+    ]
+
+    print(f"[FFmpeg] Running command: {' '.join(cmd)}")
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode != 0:
+        raise RuntimeError(f"FFmpeg error: {result.stderr.decode('utf-8', errors='ignore')}")
 
 
 class WhisperRequestHandler(BaseHTTPRequestHandler):
@@ -55,8 +111,9 @@ class WhisperRequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             response = {
                 "status": "ready",
-                "service": "faster-whisper",
-                "version": "1.2.1",
+                "service": "lingosync-backend",
+                "whisper": "1.2.1",
+                "ffmpeg": os.path.exists(FFMPEG_EXE) if FFMPEG_EXE else False,
                 "device": DEFAULT_DEVICE,
                 "loaded_models": list(LOADED_MODELS.keys()),
             }
@@ -68,6 +125,13 @@ class WhisperRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
+
+        # Route 1: FFmpeg Clip Cutting & Reframing
+        if parsed.path == "/clips/render":
+            self.handle_clip_render()
+            return
+
+        # Route 2: Faster-Whisper Speech Recognition
         if parsed.path != "/transcribe":
             self.send_response(404)
             self._send_cors_headers()
@@ -91,7 +155,6 @@ class WhisperRequestHandler(BaseHTTPRequestHandler):
         temp_file_path = None
 
         try:
-            # Check if JSON request with existing filePath
             if "application/json" in content_type:
                 data = json.loads(body.decode("utf-8"))
                 file_path = data.get("filePath")
@@ -100,10 +163,7 @@ class WhisperRequestHandler(BaseHTTPRequestHandler):
                     return
                 audio_input = file_path
             else:
-                # Direct binary audio/video data or multipart form
-                # If multipart/form-data, extract binary payload
                 if "multipart/form-data" in content_type:
-                    # Find boundary and extract file bytes
                     boundary = content_type.split("boundary=")[-1].strip()
                     boundary_bytes = ("--" + boundary).encode()
                     parts = body.split(boundary_bytes)
@@ -185,6 +245,53 @@ class WhisperRequestHandler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
+    def handle_clip_render(self):
+        """
+        Handle FFmpeg video cutting & reframing
+        """
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+
+        temp_in = None
+        temp_out = None
+
+        try:
+            data = json.loads(body.decode("utf-8"))
+            start = float(data.get("start", 0))
+            end = float(data.get("end", 15))
+            aspect_ratio = data.get("aspectRatio", "9:16")
+            reframing = data.get("reframingMode", "center_crop")
+            file_path = data.get("filePath")
+
+            if not file_path or not os.path.exists(file_path):
+                self._send_error_json(400, "File path not specified or does not exist.")
+                return
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp_out:
+                temp_out = tmp_out.name
+
+            render_ffmpeg_clip(file_path, temp_out, start, end, aspect_ratio, reframing)
+
+            with open(temp_out, "rb") as f:
+                output_bytes = f.read()
+
+            self.send_response(200)
+            self._send_cors_headers()
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Length", str(len(output_bytes)))
+            self.end_headers()
+            self.wfile.write(output_bytes)
+
+        except Exception as e:
+            print(f"[FFmpeg Render Error]: {e}")
+            self._send_error_json(500, str(e))
+        finally:
+            if temp_out and os.path.exists(temp_out):
+                try:
+                    os.remove(temp_out)
+                except Exception:
+                    pass
+
     def _send_error_json(self, status_code, message):
         self.send_response(status_code)
         self._send_cors_headers()
@@ -193,7 +300,6 @@ class WhisperRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps({"error": message}).encode("utf-8"))
 
     def log_message(self, format, *args):
-        # Concise logging
         sys.stderr.write(f"[Server] {args[0]} {args[1]}\n")
 
 
@@ -202,15 +308,15 @@ def run_server(port=8000, model="tiny", device="cpu"):
     DEFAULT_MODEL_SIZE = model
     DEFAULT_DEVICE = device
 
-    # Preload default model
     get_model(DEFAULT_MODEL_SIZE, DEFAULT_DEVICE)
 
     server_address = ("127.0.0.1", port)
     httpd = HTTPServer(server_address, WhisperRequestHandler)
     print(f"\n=======================================================")
-    print(f"  LingoSync AI - Faster-Whisper Transcription Server")
+    print(f"  LingoSync AI - AI Backend Server (Whisper + FFmpeg)")
     print(f"  Status: Active & Listening on http://127.0.0.1:{port}")
-    print(f"  Model: {model} (Device: {device})")
+    print(f"  Whisper Model: {model} (Device: {device})")
+    print(f"  FFmpeg Binary: {FFMPEG_EXE}")
     print(f"  Press Ctrl+C to stop.")
     print(f"=======================================================\n")
     try:
@@ -221,7 +327,7 @@ def run_server(port=8000, model="tiny", device="cpu"):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="LingoSync AI Faster-Whisper Server")
+    parser = argparse.ArgumentParser(description="LingoSync AI Backend Server")
     parser.add_argument("--port", type=int, default=8000, help="Port to listen on (default: 8000)")
     parser.add_argument("--model", type=str, default="tiny", choices=["tiny", "base", "small", "medium", "large-v3"], help="Whisper model size")
     parser.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda"], help="Inference device")

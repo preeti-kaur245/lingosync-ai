@@ -133,3 +133,67 @@ export interface ExportProgress {
   progress: number; // 0 to 100
   stage: string;
 }
+
+// --- AI Short Clips Generator Types ---
+
+export type ClipDurationOption = '15-30' | '30-45' | '45-60' | '60-90' | 'custom';
+export type ClipAspectOption = '9:16' | '1:1' | 'original';
+export type ClipSelectionCriteria =
+  | 'ai_highlights'
+  | 'educational'
+  | 'stories'
+  | 'qa'
+  | 'entertaining'
+  | 'manual';
+
+export interface ClipConfig {
+  durationOption: ClipDurationOption;
+  customDurationMin?: number;
+  customDurationMax?: number;
+  numClips: number;
+  aspectRatio: ClipAspectOption;
+  criteria: ClipSelectionCriteria;
+  manualRange?: { start: number; end: number };
+  subtitleStyle: SubtitleStyle;
+  burnSubtitles: boolean;
+  wordHighlight: boolean;
+  reframingMode: 'center_crop' | 'blurred_background';
+}
+
+export interface CandidateClip {
+  id: string;
+  title: string;
+  start: number;
+  end: number;
+  duration: number;
+  reason: string;
+  source: 'ai' | 'rule_based' | 'manual';
+  scores?: {
+    hook: number;
+    clarity: number;
+    value: number;
+    completeness: number;
+    overall: number;
+  };
+  transcriptSnippet: string;
+}
+
+export interface ShortClip extends CandidateClip {
+  captions: Caption[];
+  status: 'pending' | 'processing' | 'ready' | 'failed';
+  progress: number;
+  error?: string;
+  videoBlobUrl?: string;
+  downloadUrl?: string;
+  aspectRatio: AspectRatio;
+}
+
+export interface ClipGenerationStage {
+  step: number;
+  totalSteps: number;
+  title: string;
+  detail: string;
+  completedClips: number;
+  totalClips: number;
+  failedClips: number;
+}

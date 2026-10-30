@@ -61,16 +61,82 @@ export class TranscriptionService {
     };
   }
 
+  static readonly LOCAL_WHISPER_URL = 'http://127.0.0.1:8000';
+
+  /**
+   * Check if local Faster-Whisper server is running and accessible
+   */
+  static async checkLocalFasterWhisper(): Promise<boolean> {
+    if (typeof window === 'undefined') return false;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 1000);
+      const res = await fetch(`${this.LOCAL_WHISPER_URL}/health`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        return data.status === 'ready' || data.service === 'faster-whisper';
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Transcribe using local Faster-Whisper server (free, private, hardware-accelerated)
+   */
+  static async transcribeWithFasterWhisper(
+    file: File | Blob,
+    videoDuration = 15,
+    language?: string
+  ): Promise<Caption[]> {
+    const formData = new FormData();
+    const fileName = (file as File).name || 'audio.mp4';
+    formData.append('file', file, fileName);
+
+    const queryLang = language && language !== 'auto' ? `?language=${language}` : '';
+    const res = await fetch(`${this.LOCAL_WHISPER_URL}/transcribe${queryLang}`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Local Faster-Whisper transcription failed.');
+    }
+
+    const data = await res.json();
+    return SubtitleSegmentationService.parseWhisperVerbose(data, videoDuration);
+  }
+
   /**
    * AI Transcription:
-   * If an OpenAI API Key is provided, calls Whisper API directly.
-   * Otherwise, generates smart timed captions based on video audio duration and common speech pacing.
+   * 1. Uses local Faster-Whisper server if running (100% free, offline, word-level timestamps).
+   * 2. Uses OpenAI Whisper Cloud API if key is configured.
+   * 3. Otherwise, generates intelligent speech segmentation based on video duration.
    */
   static async transcribeMedia(
     file: File | Blob,
     videoDuration: number,
-    apiKey?: string
+    apiKey?: string,
+    language?: string
   ): Promise<Caption[]> {
+    // 1. Check if local Faster-Whisper is active
+    if (file && file.size > 0) {
+      const isLocalActive = await this.checkLocalFasterWhisper();
+      if (isLocalActive) {
+        try {
+          return await this.transcribeWithFasterWhisper(file, videoDuration, language);
+        } catch (e: any) {
+          console.warn('Local Faster-Whisper failed, attempting cloud fallback:', e);
+        }
+      }
+    }
+
+    // 2. OpenAI Whisper Cloud API
     const key = apiKey || process.env.NEXT_PUBLIC_OPENAI_API_KEY;
     if (key && file && file.size > 0) {
       return this.transcribeWithWhisper(file, key, videoDuration);

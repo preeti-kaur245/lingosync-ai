@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "preview": "npx serve out",
+    "whisper": "python server/whisper_server.py",
+    "whisper:base": "python server/whisper_server.py --model base",
     "lint": "next lint"
   },
   "dependencies": {

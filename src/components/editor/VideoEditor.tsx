@@ -67,6 +67,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
   const [transcriptionStatus, setTranscriptionStatus] = useState('');
   const [whisperApiKey, setWhisperApiKey] = useState(() => process.env.NEXT_PUBLIC_OPENAI_API_KEY || '');
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [isLocalWhisperConnected, setIsLocalWhisperConnected] = useState(false);
   const [savedProjects, setSavedProjects] = useState<Project[]>([]);
   const [saveToast, setSaveToast] = useState(false);
   const [containerDimensions, setContainerDimensions] = useState<{ width: number; height: number }>({
@@ -76,6 +77,21 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
+
+  // Check local faster-whisper server health periodically
+  useEffect(() => {
+    let active = true;
+    const probe = async () => {
+      const isUp = await TranscriptionService.checkLocalFasterWhisper();
+      if (active) setIsLocalWhisperConnected(isUp);
+    };
+    probe();
+    const timer = setInterval(probe, 6000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, []);
 
   // Preload fonts
   useEffect(() => {
@@ -258,10 +274,14 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
     setProject((prev) => ({ ...prev, captions: updated }));
   };
 
-  // --- AI Transcription in English ---
+  // --- AI Transcription ---
   const handleAutoTranscribe = async () => {
     setIsTranscribing(true);
-    setTranscriptionStatus('Listening to audio track and generating synchronized subtitles...');
+    setTranscriptionStatus(
+      isLocalWhisperConnected
+        ? 'Transcribing audio with local Faster-Whisper (word-level precision)...'
+        : 'Listening to audio track and generating synchronized subtitles...'
+    );
     try {
       let mediaBlob: Blob = new Blob([]);
       if (project.videoUrl) {
@@ -278,7 +298,8 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
       const generated = await TranscriptionService.transcribeMedia(
         mediaBlob,
         duration,
-        whisperApiKey || undefined
+        whisperApiKey || undefined,
+        project.sourceLang
       );
       setProject((prev) => ({
         ...prev,
@@ -287,7 +308,11 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
         captions: generated,
         originalCaptions: generated,
       }));
-      setTranscriptionStatus('English subtitles generated!');
+      setTranscriptionStatus(
+        isLocalWhisperConnected
+          ? 'Generated via local Faster-Whisper with word timestamps!'
+          : 'Subtitles generated successfully!'
+      );
       setTimeout(() => setTranscriptionStatus(''), 3000);
     } catch (err: any) {
       console.error('Transcription error:', err);
@@ -455,6 +480,16 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
+            {isLocalWhisperConnected && (
+              <div
+                title="Faster-Whisper local server is connected at http://127.0.0.1:8000"
+                className="hidden md:flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[11px] font-bold"
+              >
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span>Faster-Whisper AI</span>
+              </div>
+            )}
+
             <button
               onClick={handleAutoTranscribe}
               disabled={isTranscribing}
@@ -1195,25 +1230,71 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
         {/* Tab 5: Settings */}
         {activeTab === 'settings' && (
           <div className="flex-1 overflow-y-auto p-4 space-y-6 text-xs">
-            <div className="p-4 rounded-2xl bg-white/5 border border-white/10 space-y-2">
-              <span className="text-xs font-bold text-white block">Speech Engine Configuration</span>
+            {/* Faster-Whisper Local AI Status Card */}
+            <div
+              className={`p-4 rounded-2xl border transition-all ${
+                isLocalWhisperConnected
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                  : 'bg-white/5 border-white/10 text-gray-300'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-bold text-white flex items-center gap-2">
+                  <span
+                    className={`w-2.5 h-2.5 rounded-full ${
+                      isLocalWhisperConnected ? 'bg-emerald-400 animate-pulse' : 'bg-gray-500'
+                    }`}
+                  />
+                  Faster-Whisper (Local AI)
+                </span>
+                <span
+                  className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                    isLocalWhisperConnected ? 'bg-emerald-500/20 text-emerald-400' : 'bg-white/10 text-gray-400'
+                  }`}
+                >
+                  {isLocalWhisperConnected ? 'Connected' : 'Offline'}
+                </span>
+              </div>
               <p className="text-[11px] text-gray-400 leading-relaxed">
-                Connect your OpenAI API key for word-level speech recognition timestamps, or use our instant browser recognition.
+                {isLocalWhisperConnected
+                  ? 'Your local Faster-Whisper server is active at http://127.0.0.1:8000. Subtitles are transcribed offline on your device with CTranslate2 and PyAV.'
+                  : 'To transcribe videos offline with faster-whisper without an API key, run this in your terminal:'}
               </p>
+              {!isLocalWhisperConnected && (
+                <div className="mt-3 p-2.5 rounded-xl bg-black/50 border border-white/10 font-mono text-[11px] text-brand-primary flex items-center justify-between">
+                  <code>python server/whisper_server.py</code>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText('python server/whisper_server.py');
+                      alert('Command copied! Run it in PowerShell or Terminal to launch Faster-Whisper.');
+                    }}
+                    className="ml-2 px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-white text-[10px]"
+                  >
+                    Copy
+                  </button>
+                </div>
+              )}
             </div>
 
-            <div className="space-y-2">
-              <label className="text-[10px] uppercase font-bold text-gray-400 block">OpenAI Whisper API Key</label>
-              <input
-                type="password"
-                placeholder="sk-proj-..."
-                value={whisperApiKey}
-                onChange={(e) => setWhisperApiKey(e.target.value)}
-                className="w-full bg-white/5 border border-white/10 rounded-xl p-2.5 text-xs text-white outline-none focus:border-brand-primary"
-              />
-              <span className="text-[10px] text-gray-500 block">
-                Keys are stored only in your local browser session and never sent to external servers.
-              </span>
+            {/* OpenAI Whisper Cloud API Key Backup */}
+            <div className="p-4 rounded-2xl bg-white/5 border border-white/10 space-y-3">
+              <div>
+                <span className="text-xs font-bold text-white block">OpenAI Cloud Backup (Optional)</span>
+                <p className="text-[11px] text-gray-400 mt-0.5">
+                  Used as fallback when Faster-Whisper server is not active on your computer.
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] uppercase font-bold text-gray-400 block">OpenAI API Key</label>
+                <input
+                  type="password"
+                  placeholder="sk-proj-..."
+                  value={whisperApiKey}
+                  onChange={(e) => setWhisperApiKey(e.target.value)}
+                  className="w-full bg-black/40 border border-white/10 rounded-xl p-2.5 text-xs text-white outline-none focus:border-brand-primary"
+                />
+              </div>
             </div>
           </div>
         )}

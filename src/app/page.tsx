@@ -13,6 +13,7 @@ import { Project, Caption } from '@/types';
 import { storageService } from '@/services/storage.service';
 import { MediaService } from '@/services/media.service';
 import { STYLE_PRESETS } from '@/services/font.service';
+import { VideoMetadataService } from '@/services/videoMetadata.service';
 
 const Navbar = ({ onOpenEditor }: { onOpenEditor: () => void }) => (
   <nav className="fixed top-0 w-full z-50 px-6 py-4 flex justify-between items-center glass-nav">
@@ -78,7 +79,6 @@ const FeatureCard = ({
 export default function LandingPage() {
   const [editorMode, setEditorMode] = useState(false);
   const [activeProject, setActiveProject] = useState<Project | undefined>(undefined);
-  const [activeMediaFile, setActiveMediaFile] = useState<File | Blob | undefined>(undefined);
   const [savedProjects, setSavedProjects] = useState<Project[]>([]);
 
   useEffect(() => {
@@ -89,20 +89,22 @@ export default function LandingPage() {
     let videoUrl = '';
     let duration = 15;
     let thumbnailUrl = '';
+    let detectedAspectRatio: any = '16:9';
+    let extractedMeta: any = undefined;
 
     if (isSample || file.size === 0) {
       videoUrl = MediaService.SAMPLE_VIDEO_URL;
       duration = 15;
-      setActiveMediaFile(undefined);
+      detectedAspectRatio = '16:9';
     } else {
       videoUrl = URL.createObjectURL(file);
-      setActiveMediaFile(file);
       try {
-        const meta = await MediaService.extractVideoMetadata(file);
-        duration = meta.duration || 15;
-        thumbnailUrl = meta.thumbnailUrl || '';
+        extractedMeta = await VideoMetadataService.extractMetadata(file);
+        duration = extractedMeta.duration || 15;
+        thumbnailUrl = extractedMeta.thumbnailUrl || '';
+        detectedAspectRatio = extractedMeta.aspectRatio || '16:9';
       } catch (e) {
-        console.warn('Could not extract metadata:', e);
+        console.warn('Could not extract video metadata:', e);
       }
     }
 
@@ -114,12 +116,13 @@ export default function LandingPage() {
       duration,
       videoUrl,
       thumbnailUrl,
+      metadata: extractedMeta,
       captions: initialCaptions || MediaService.SAMPLE_CAPTIONS,
       originalCaptions: initialCaptions || MediaService.SAMPLE_CAPTIONS,
       style: STYLE_PRESETS[0],
       sourceLang: 'en',
       targetLang: 'en',
-      aspectRatio: '16:9',
+      aspectRatio: detectedAspectRatio,
     };
 
     storageService.saveProject(newProject);
@@ -142,11 +145,9 @@ export default function LandingPage() {
     return (
       <VideoEditor
         initialProject={activeProject}
-        mediaFile={activeMediaFile}
         onBack={() => {
           setEditorMode(false);
           setActiveProject(undefined);
-          setActiveMediaFile(undefined);
         }}
       />
     );

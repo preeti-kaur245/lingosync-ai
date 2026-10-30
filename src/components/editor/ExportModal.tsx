@@ -41,6 +41,10 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     ExportService.downloadVTT(captions, `${sanitizedTitle}.vtt`);
   };
 
+  const handleDownloadASS = () => {
+    ExportService.downloadASS(captions, style, `${sanitizedTitle}.ass`, aspectRatio);
+  };
+
   const handleDownloadTXT = () => {
     ExportService.downloadTXT(captions, `${sanitizedTitle}_transcript.txt`);
   };
@@ -135,14 +139,14 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               <span className="text-xs uppercase font-bold tracking-wider text-gray-400 block mb-3">
                 Subtitle Files (Free & Fast)
               </span>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <button
                   onClick={handleDownloadSRT}
                   className="flex flex-col items-center justify-center gap-2 p-4 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 hover:border-brand-primary/50 transition-all text-center group"
                 >
                   <FileText size={24} className="text-brand-primary group-hover:scale-110 transition-transform" />
-                  <span className="text-sm font-bold text-white">Download SRT</span>
-                  <span className="text-[10px] text-gray-400">Universal subtitle file</span>
+                  <span className="text-sm font-bold text-white">SRT</span>
+                  <span className="text-[10px] text-gray-400">Universal subtitles</span>
                 </button>
 
                 <button
@@ -150,8 +154,17 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                   className="flex flex-col items-center justify-center gap-2 p-4 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 hover:border-brand-secondary/50 transition-all text-center group"
                 >
                   <FileText size={24} className="text-brand-secondary group-hover:scale-110 transition-transform" />
-                  <span className="text-sm font-bold text-white">Download VTT</span>
-                  <span className="text-[10px] text-gray-400">WebVTT for web players</span>
+                  <span className="text-sm font-bold text-white">WebVTT</span>
+                  <span className="text-[10px] text-gray-400">HTML5 web players</span>
+                </button>
+
+                <button
+                  onClick={handleDownloadASS}
+                  className="flex flex-col items-center justify-center gap-2 p-4 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 hover:border-amber-400/50 transition-all text-center group"
+                >
+                  <FileText size={24} className="text-amber-400 group-hover:scale-110 transition-transform" />
+                  <span className="text-sm font-bold text-white">ASS / SSA</span>
+                  <span className="text-[10px] text-gray-400">Preserves styles & colors</span>
                 </button>
 
                 <button
@@ -159,7 +172,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                   className="flex flex-col items-center justify-center gap-2 p-4 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 hover:border-rose-400/50 transition-all text-center group"
                 >
                   <FileText size={24} className="text-rose-400 group-hover:scale-110 transition-transform" />
-                  <span className="text-sm font-bold text-white">Download TXT</span>
+                  <span className="text-sm font-bold text-white">TXT</span>
                   <span className="text-[10px] text-gray-400">Plain text transcript</span>
                 </button>
               </div>

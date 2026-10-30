@@ -11,16 +11,17 @@ import { Caption, Project, SubtitleStyle, AspectRatio } from '@/types';
 import { STYLE_PRESETS, AVAILABLE_FONTS, FontService } from '@/services/font.service';
 import { SUPPORTED_LANGUAGES, TranslationService } from '@/services/translation.service';
 import { TranscriptionService } from '@/services/transcription.service';
+import { SubtitleLayoutService } from '@/services/subtitleLayout.service';
+import { VideoMetadataService } from '@/services/videoMetadata.service';
 import { storageService } from '@/services/storage.service';
 import { ExportModal } from './ExportModal';
 
 interface VideoEditorProps {
   initialProject?: Project;
-  mediaFile?: File | Blob;
   onBack: () => void;
 }
 
-export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, mediaFile, onBack }) => {
+export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack }) => {
   // --- Project State ---
   const [project, setProject] = useState<Project>(() => {
     if (initialProject) {
@@ -68,37 +69,45 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, mediaF
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [savedProjects, setSavedProjects] = useState<Project[]>([]);
   const [saveToast, setSaveToast] = useState(false);
+  const [containerDimensions, setContainerDimensions] = useState<{ width: number; height: number }>({
+    width: 640,
+    height: 360,
+  });
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
-  const mediaFileRef = useRef<File | Blob | null>(mediaFile || null);
-
-  useEffect(() => {
-    if (mediaFile) mediaFileRef.current = mediaFile;
-  }, [mediaFile]);
-
-  const getMediaBlob = async (): Promise<File | Blob> => {
-    if (mediaFileRef.current && mediaFileRef.current.size > 0) {
-      return mediaFileRef.current;
-    }
-    if (project.videoUrl && project.videoUrl.startsWith('blob:')) {
-      try {
-        const res = await fetch(project.videoUrl);
-        const b = await res.blob();
-        mediaFileRef.current = b;
-        return b;
-      } catch (e) {
-        console.warn('Could not fetch video blob:', e);
-      }
-    }
-    return new Blob([]);
-  };
 
   // Preload fonts
   useEffect(() => {
     FontService.loadGoogleFont(project.style.fontFamily);
     setSavedProjects(storageService.getProjects());
   }, [project.style.fontFamily]);
+
+  // Track video container dimensions with ResizeObserver for exact preview-export parity
+  useEffect(() => {
+    const el = videoContainerRef.current;
+    if (!el) return;
+
+    const updateDims = () => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        setContainerDimensions({
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        });
+      }
+    };
+
+    updateDims();
+    const ro = new ResizeObserver(updateDims);
+    ro.observe(el);
+    window.addEventListener('resize', updateDims);
+
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', updateDims);
+    };
+  }, [project.aspectRatio]);
 
   // Auto-save project changes
   useEffect(() => {
@@ -125,8 +134,29 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, mediaF
   const handleLoadedMetadata = () => {
     if (videoRef.current) {
       const dur = videoRef.current.duration;
+      const vw = videoRef.current.videoWidth;
+      const vh = videoRef.current.videoHeight;
       setDuration(dur);
-      setProject((prev) => ({ ...prev, duration: dur }));
+
+      if (vw && vh && (!project.metadata || !project.metadata.width)) {
+        const detected = VideoMetadataService.detectAspectRatio(vw, vh);
+        const orientation = VideoMetadataService.detectOrientation(vw, vh);
+        setProject((prev) => ({
+          ...prev,
+          duration: dur,
+          aspectRatio: prev.aspectRatio === 'custom' || !prev.aspectRatio ? detected.ratio : prev.aspectRatio,
+          metadata: {
+            width: vw,
+            height: vh,
+            aspectRatio: detected.ratio,
+            aspectRatioValue: detected.value,
+            duration: dur,
+            orientation,
+          },
+        }));
+      } else {
+        setProject((prev) => ({ ...prev, duration: dur }));
+      }
     }
   };
 
@@ -228,14 +258,25 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, mediaF
     setProject((prev) => ({ ...prev, captions: updated }));
   };
 
-  // --- AI Transcription in English with Exact Audio Timestamps ---
+  // --- AI Transcription in English ---
   const handleAutoTranscribe = async () => {
     setIsTranscribing(true);
-    setTranscriptionStatus('Analyzing audio & generating exact millisecond English subtitles...');
+    setTranscriptionStatus('Listening to audio track and generating synchronized subtitles...');
     try {
-      const fileToTranscribe = await getMediaBlob();
+      let mediaBlob: Blob = new Blob([]);
+      if (project.videoUrl) {
+        try {
+          const res = await fetch(project.videoUrl);
+          if (res.ok) {
+            mediaBlob = await res.blob();
+          }
+        } catch (e) {
+          console.warn('Could not fetch media blob from videoUrl, using fallback:', e);
+        }
+      }
+
       const generated = await TranscriptionService.transcribeMedia(
-        fileToTranscribe,
+        mediaBlob,
         duration,
         whisperApiKey || undefined
       );
@@ -246,8 +287,8 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, mediaF
         captions: generated,
         originalCaptions: generated,
       }));
-      setTranscriptionStatus(`Generated ${generated.length} subtitles with exact timestamps!`);
-      setTimeout(() => setTranscriptionStatus(''), 4000);
+      setTranscriptionStatus('English subtitles generated!');
+      setTimeout(() => setTranscriptionStatus(''), 3000);
     } catch (err: any) {
       console.error('Transcription error:', err);
       setTranscriptionStatus('Transcription failed: ' + err.message);
@@ -255,15 +296,6 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, mediaF
       setIsTranscribing(false);
     }
   };
-
-  // Automatically transcribe when a user uploads their video file (Clipchamp style)
-  const hasAutoTranscribedRef = useRef(false);
-  useEffect(() => {
-    if (mediaFile && mediaFile.size > 0 && !hasAutoTranscribedRef.current) {
-      hasAutoTranscribedRef.current = true;
-      handleAutoTranscribe();
-    }
-  }, [mediaFile]);
 
   // --- Automatic Translation on Language Change with Timeline Preservation ---
   const handleLanguageChange = async (newLang: string) => {
@@ -312,6 +344,18 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, mediaF
 
   // Active caption
   const activeCaption = project.captions.find((c) => currentTime >= c.start && currentTime <= c.end);
+
+  // Responsive Subtitle Layout Engine calculation for Preview (matches Canvas Video Export 1:1)
+  const activeCaptionLayout = React.useMemo(() => {
+    if (!activeCaption || !containerDimensions.width || !containerDimensions.height) return null;
+    return SubtitleLayoutService.computeLayout({
+      text: activeCaption.text,
+      viewportWidth: containerDimensions.width,
+      viewportHeight: containerDimensions.height,
+      style: project.style,
+      aspectRatio: project.aspectRatio || '16:9',
+    });
+  }, [activeCaption, containerDimensions, project.style, project.aspectRatio]);
 
   const formatTime = (time: number) => {
     const mins = Math.floor(time / 60);
@@ -454,61 +498,60 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, mediaF
               playsInline
             />
 
-            {/* Dynamic Styled Subtitle Overlay */}
+            {/* Dynamic Styled Subtitle Overlay rendered via SubtitleLayoutService */}
             <AnimatePresence>
-              {activeCaption && (
+              {activeCaption && activeCaptionLayout && (
                 <div
-                  className={`absolute left-3 right-3 pointer-events-none flex justify-center z-10 transition-all ${
-                    project.style.position === 'top'
-                      ? 'top-6'
-                      : project.style.position === 'center'
-                      ? 'top-1/2 -translate-y-1/2'
-                      : project.aspectRatio === '9:16'
-                      ? 'bottom-20'
-                      : 'bottom-8'
-                  }`}
                   style={{
-                    marginBottom: project.style.position === 'bottom' ? `${project.style.yOffset}%` : undefined,
-                    marginTop: project.style.position === 'top' ? `${project.style.yOffset}%` : undefined,
+                    position: 'absolute',
+                    left: `${activeCaptionLayout.boxX}px`,
+                    top: `${activeCaptionLayout.boxY}px`,
+                    width: `${activeCaptionLayout.boxWidth}px`,
+                    height: `${activeCaptionLayout.boxHeight}px`,
+                    pointerEvents: 'none',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    backgroundColor: project.style.backgroundColor,
+                    borderRadius: `${Math.round(project.style.backgroundRadius * activeCaptionLayout.scaleFactor)}px`,
+                    boxSizing: 'border-box',
+                    zIndex: 10,
                   }}
                 >
                   <motion.div
                     key={activeCaption.id}
-                    initial={{ opacity: 0, scale: project.style.animation === 'pop' ? 0.85 : 1 }}
+                    initial={{ opacity: 0, scale: project.style.animation === 'pop' ? 0.9 : 1 }}
                     animate={{ opacity: 1, scale: 1 }}
                     exit={{ opacity: 0 }}
                     transition={{ duration: 0.12 }}
-                    style={{
-                      fontFamily: `"${project.style.fontFamily}", sans-serif`,
-                      fontSize:
-                        project.aspectRatio === '9:16'
-                          ? `${Math.max(14, Math.round(project.style.fontSize * 0.72))}px`
-                          : project.aspectRatio === '1:1'
-                          ? `${Math.max(15, Math.round(project.style.fontSize * 0.82))}px`
-                          : project.aspectRatio === '4:5'
-                          ? `${Math.max(15, Math.round(project.style.fontSize * 0.78))}px`
-                          : `${project.style.fontSize}px`,
-                      fontWeight: project.style.fontWeight,
-                      color: project.style.color,
-                      textTransform: project.style.textTransform,
-                      letterSpacing: `${project.style.letterSpacing}px`,
-                      textShadow:
-                        project.style.shadowBlur > 0
-                          ? `0 ${project.style.shadowOffsetY}px ${project.style.shadowBlur}px ${project.style.shadowColor}`
-                          : 'none',
-                      WebkitTextStroke:
-                        project.style.strokeWidth > 0
-                          ? `${Math.max(1, Math.round(project.style.strokeWidth * (project.aspectRatio === '9:16' ? 0.75 : 1)))}px ${project.style.strokeColor}`
-                          : undefined,
-                      backgroundColor: project.style.backgroundColor,
-                      padding: `${project.style.backgroundPadding}px ${project.style.backgroundPadding * 1.4}px`,
-                      borderRadius: `${project.style.backgroundRadius}px`,
-                    }}
-                    className={`text-center leading-snug select-none ${
-                      project.aspectRatio === '9:16' ? 'max-w-[80%]' : 'max-w-[86%]'
-                    }`}
+                    className="flex flex-col items-center justify-center select-none w-full"
                   >
-                    {activeCaption.text}
+                    {activeCaptionLayout.lines.map((line, idx) => (
+                      <div
+                        key={idx}
+                        style={{
+                          fontFamily: `"${project.style.fontFamily}", sans-serif`,
+                          fontSize: `${activeCaptionLayout.fontSize}px`,
+                          lineHeight: `${activeCaptionLayout.lineHeight}px`,
+                          fontWeight: project.style.fontWeight,
+                          color: project.style.color,
+                          letterSpacing: `${project.style.letterSpacing}px`,
+                          textShadow:
+                            project.style.shadowBlur > 0
+                              ? `0 ${project.style.shadowOffsetY}px ${project.style.shadowBlur}px ${project.style.shadowColor}`
+                              : 'none',
+                          WebkitTextStroke:
+                            project.style.strokeWidth > 0
+                              ? `${Math.max(1, Math.round(project.style.strokeWidth * activeCaptionLayout.scaleFactor))}px ${project.style.strokeColor}`
+                              : undefined,
+                          whiteSpace: 'nowrap',
+                          textAlign: 'center',
+                        }}
+                      >
+                        {line}
+                      </div>
+                    ))}
                   </motion.div>
                 </div>
               )}
@@ -878,6 +921,168 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, mediaF
                 ))}
               </div>
             </div>
+
+            {/* Responsive Auto-Scale Toggle */}
+            <div className="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/10">
+              <div>
+                <span className="text-xs font-bold text-white block">Responsive Auto-Scale</span>
+                <span className="text-[10px] text-gray-400">Scale font to video resolution & aspect ratio</span>
+              </div>
+              <button
+                onClick={() =>
+                  setProject({
+                    ...project,
+                    style: { ...project.style, autoSize: project.style.autoSize === false ? true : false },
+                  })
+                }
+                className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors ${
+                  project.style.autoSize !== false ? 'bg-brand-primary justify-end' : 'bg-white/20 justify-start'
+                }`}
+              >
+                <div className="w-4 h-4 rounded-full bg-white shadow-md" />
+              </button>
+            </div>
+
+            {/* Safe Area Margins & Platform Presets */}
+            <div className="space-y-2">
+              <label className="text-[10px] uppercase font-bold text-gray-400 block">Safe Margins / Platform</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() =>
+                    setProject({
+                      ...project,
+                      style: { ...project.style, safeAreaPreset: 'standard' },
+                    })
+                  }
+                  className={`p-2.5 rounded-xl text-left border transition-all ${
+                    (project.style.safeAreaPreset || 'standard') === 'standard'
+                      ? 'bg-brand-primary/20 border-brand-primary text-white'
+                      : 'bg-white/5 text-gray-400 border-white/10 hover:text-white'
+                  }`}
+                >
+                  <span className="text-xs font-bold block">Standard</span>
+                  <span className="text-[10px] text-gray-400">Web, YouTube & TV</span>
+                </button>
+                <button
+                  onClick={() =>
+                    setProject({
+                      ...project,
+                      style: { ...project.style, safeAreaPreset: 'tiktok_reels' },
+                    })
+                  }
+                  className={`p-2.5 rounded-xl text-left border transition-all ${
+                    project.style.safeAreaPreset === 'tiktok_reels'
+                      ? 'bg-brand-primary/20 border-brand-primary text-white'
+                      : 'bg-white/5 text-gray-400 border-white/10 hover:text-white'
+                  }`}
+                >
+                  <span className="text-xs font-bold block">TikTok / Shorts / Reels</span>
+                  <span className="text-[10px] text-gray-400">Elevated bottom safe zone</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Max Text Width & Max Lines */}
+            <div className="space-y-3">
+              <div>
+                <div className="flex justify-between text-xs text-gray-400 mb-1">
+                  <span>Max Width (% of video)</span>
+                  <span className="font-mono">{project.style.maxWidthPercent || 86}%</span>
+                </div>
+                <input
+                  type="range"
+                  min="60"
+                  max="95"
+                  value={project.style.maxWidthPercent || 86}
+                  onChange={(e) =>
+                    setProject({
+                      ...project,
+                      style: { ...project.style, maxWidthPercent: parseInt(e.target.value, 10) },
+                    })
+                  }
+                  className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer accent-brand-primary"
+                />
+              </div>
+
+              <div>
+                <div className="flex justify-between text-xs text-gray-400 mb-1">
+                  <span>Max Lines per Subtitle</span>
+                  <span className="font-mono">{project.style.maxLines || 2} lines</span>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {[1, 2, 3].map((lines) => (
+                    <button
+                      key={lines}
+                      onClick={() =>
+                        setProject({
+                          ...project,
+                          style: { ...project.style, maxLines: lines },
+                        })
+                      }
+                      className={`py-1.5 rounded-lg text-xs font-medium border transition-all ${
+                        (project.style.maxLines || 2) === lines
+                          ? 'bg-brand-primary text-white border-brand-primary'
+                          : 'bg-white/5 text-gray-400 border-white/10 hover:text-white'
+                      }`}
+                    >
+                      {lines} {lines === 1 ? 'Line' : 'Lines'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Background Box Styling */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-gray-300">Background Box</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() =>
+                      setProject({
+                        ...project,
+                        style: {
+                          ...project.style,
+                          backgroundColor:
+                            project.style.backgroundColor === 'transparent'
+                              ? 'rgba(0, 0, 0, 0.75)'
+                              : 'transparent',
+                        },
+                      })
+                    }
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-all ${
+                      project.style.backgroundColor !== 'transparent'
+                        ? 'bg-brand-primary/20 border-brand-primary text-white'
+                        : 'bg-white/5 border-white/10 text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    {project.style.backgroundColor !== 'transparent' ? 'Enabled' : 'None'}
+                  </button>
+                </div>
+              </div>
+
+              {project.style.backgroundColor !== 'transparent' && (
+                <div>
+                  <div className="flex justify-between text-xs text-gray-400 mb-1">
+                    <span>Corner Radius</span>
+                    <span className="font-mono">{project.style.backgroundRadius}px</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="24"
+                    value={project.style.backgroundRadius}
+                    onChange={(e) =>
+                      setProject({
+                        ...project,
+                        style: { ...project.style, backgroundRadius: parseInt(e.target.value, 10) },
+                      })
+                    }
+                    className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer accent-brand-primary"
+                  />
+                </div>
+              )}
+            </div>
           </div>
         )}
 
@@ -990,15 +1195,25 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, mediaF
         {/* Tab 5: Settings */}
         {activeTab === 'settings' && (
           <div className="flex-1 overflow-y-auto p-4 space-y-6 text-xs">
+            <div className="p-4 rounded-2xl bg-white/5 border border-white/10 space-y-2">
+              <span className="text-xs font-bold text-white block">Speech Engine Configuration</span>
+              <p className="text-[11px] text-gray-400 leading-relaxed">
+                Connect your OpenAI API key for word-level speech recognition timestamps, or use our instant browser recognition.
+              </p>
+            </div>
+
             <div className="space-y-2">
-              <label className="text-[10px] uppercase font-bold text-gray-400 block"></label>
+              <label className="text-[10px] uppercase font-bold text-gray-400 block">OpenAI Whisper API Key</label>
               <input
                 type="password"
-                placeholder="sk-..."
+                placeholder="sk-proj-..."
                 value={whisperApiKey}
                 onChange={(e) => setWhisperApiKey(e.target.value)}
                 className="w-full bg-white/5 border border-white/10 rounded-xl p-2.5 text-xs text-white outline-none focus:border-brand-primary"
               />
+              <span className="text-[10px] text-gray-500 block">
+                Keys are stored only in your local browser session and never sent to external servers.
+              </span>
             </div>
           </div>
         )}

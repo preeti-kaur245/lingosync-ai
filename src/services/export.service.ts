@@ -253,7 +253,7 @@ export class ExportService {
   }
 
   /**
-   * Helper to draw styled subtitles on 2D canvas
+   * Helper to draw styled, multiline-wrapped subtitles on 2D canvas with ratio-adaptive sizing
    */
   private static renderSubtitleOnCanvas(
     ctx: CanvasRenderingContext2D,
@@ -262,8 +262,13 @@ export class ExportService {
     canvasWidth: number,
     canvasHeight: number
   ): void {
-    const scaleFactor = canvasHeight / 720;
-    const fontSize = Math.round(style.fontSize * scaleFactor);
+    // Adaptive scale factor based on minimum dimension so vertical videos don't get blown-up text
+    const baseDimension = Math.min(canvasWidth, canvasHeight);
+    const scaleFactor = baseDimension / 720;
+    const ratioMultiplier = canvasWidth < canvasHeight ? 0.82 : 1.0;
+    const fontSize = Math.max(16, Math.round(style.fontSize * scaleFactor * ratioMultiplier));
+    const lineHeight = Math.round(fontSize * 1.3);
+
     ctx.font = `${style.fontWeight} ${fontSize}px "${style.fontFamily}", sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -271,6 +276,23 @@ export class ExportService {
     let displayText = text;
     if (style.textTransform === 'uppercase') displayText = text.toUpperCase();
     if (style.textTransform === 'lowercase') displayText = text.toLowerCase();
+
+    // Word wrap into lines that cleanly fit inside 82% of canvas width
+    const words = displayText.split(' ');
+    const lines: string[] = [];
+    let curLine = words[0] || '';
+    const maxLineWidth = canvasWidth * 0.82;
+
+    for (let i = 1; i < words.length; i++) {
+      const test = curLine + ' ' + words[i];
+      if (ctx.measureText(test).width > maxLineWidth) {
+        lines.push(curLine);
+        curLine = words[i];
+      } else {
+        curLine = test;
+      }
+    }
+    if (curLine) lines.push(curLine);
 
     // Position calculation
     const x = canvasWidth / 2;
@@ -281,21 +303,24 @@ export class ExportService {
       y = canvasHeight / 2;
     }
 
-    // Measure text
-    const metrics = ctx.measureText(displayText);
-    const textWidth = metrics.width;
-    const padding = style.backgroundPadding * scaleFactor;
+    const padding = Math.round((style.backgroundPadding || 8) * scaleFactor);
+    let maxTextWidth = 0;
+    lines.forEach((l) => {
+      const w = ctx.measureText(l).width;
+      if (w > maxTextWidth) maxTextWidth = w;
+    });
 
-    // Background box
+    const totalHeight = lines.length * lineHeight;
+    const boxWidth = maxTextWidth + padding * 2.4;
+    const boxHeight = totalHeight + padding * 1.2;
+    const boxX = x - boxWidth / 2;
+    const boxY = y - boxHeight / 2;
+    const radius = Math.round((style.backgroundRadius || 6) * scaleFactor);
+
+    // Background box covering all wrapped lines
     if (style.backgroundColor && style.backgroundColor !== 'transparent') {
       ctx.save();
       ctx.fillStyle = style.backgroundColor;
-      const boxWidth = textWidth + padding * 2;
-      const boxHeight = fontSize * 1.4 + padding;
-      const boxX = x - boxWidth / 2;
-      const boxY = y - boxHeight / 2;
-      const radius = style.backgroundRadius * scaleFactor;
-
       if (ctx.roundRect) {
         ctx.beginPath();
         ctx.roundRect(boxX, boxY, boxWidth, boxHeight, radius);
@@ -306,27 +331,34 @@ export class ExportService {
       ctx.restore();
     }
 
-    // Shadow
-    ctx.save();
-    if (style.shadowBlur > 0) {
-      ctx.shadowColor = style.shadowColor;
-      ctx.shadowBlur = style.shadowBlur * scaleFactor;
-      ctx.shadowOffsetX = 0;
-      ctx.shadowOffsetY = style.shadowOffsetY * scaleFactor;
-    }
+    // Starting Y for multi-line rendering
+    const startY = y - (totalHeight / 2) + (lineHeight / 2);
 
-    // Stroke / outline
-    if (style.strokeWidth > 0 && style.strokeColor !== 'transparent') {
-      ctx.strokeStyle = style.strokeColor;
-      ctx.lineWidth = style.strokeWidth * 2 * scaleFactor;
-      ctx.lineJoin = 'round';
-      ctx.strokeText(displayText, x, y);
-    }
+    lines.forEach((lineText, idx) => {
+      const lineY = startY + idx * lineHeight;
 
-    // Fill text
-    ctx.fillStyle = style.color;
-    ctx.fillText(displayText, x, y);
-    ctx.restore();
+      // Shadow
+      ctx.save();
+      if (style.shadowBlur > 0) {
+        ctx.shadowColor = style.shadowColor;
+        ctx.shadowBlur = style.shadowBlur * scaleFactor;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = style.shadowOffsetY * scaleFactor;
+      }
+
+      // Stroke / outline
+      if (style.strokeWidth > 0 && style.strokeColor !== 'transparent') {
+        ctx.strokeStyle = style.strokeColor;
+        ctx.lineWidth = style.strokeWidth * 2 * scaleFactor;
+        ctx.lineJoin = 'round';
+        ctx.strokeText(lineText, x, lineY);
+      }
+
+      // Fill text
+      ctx.fillStyle = style.color;
+      ctx.fillText(lineText, x, lineY);
+      ctx.restore();
+    });
   }
 }
 

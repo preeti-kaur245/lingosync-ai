@@ -78,6 +78,7 @@ const FeatureCard = ({
 export default function LandingPage() {
   const [editorMode, setEditorMode] = useState(false);
   const [activeProject, setActiveProject] = useState<Project | undefined>(undefined);
+  const [activeMediaFile, setActiveMediaFile] = useState<File | Blob | undefined>(undefined);
   const [savedProjects, setSavedProjects] = useState<Project[]>([]);
 
   useEffect(() => {
@@ -92,8 +93,10 @@ export default function LandingPage() {
     if (isSample || file.size === 0) {
       videoUrl = MediaService.SAMPLE_VIDEO_URL;
       duration = 15;
+      setActiveMediaFile(undefined);
     } else {
       videoUrl = URL.createObjectURL(file);
+      setActiveMediaFile(file);
       try {
         const meta = await MediaService.extractVideoMetadata(file);
         duration = meta.duration || 15;
@@ -139,9 +142,11 @@ export default function LandingPage() {
     return (
       <VideoEditor
         initialProject={activeProject}
+        mediaFile={activeMediaFile}
         onBack={() => {
           setEditorMode(false);
           setActiveProject(undefined);
+          setActiveMediaFile(undefined);
         }}
       />
     );

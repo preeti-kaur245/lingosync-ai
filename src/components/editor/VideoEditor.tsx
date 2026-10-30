@@ -16,10 +16,11 @@ import { ExportModal } from './ExportModal';
 
 interface VideoEditorProps {
   initialProject?: Project;
+  mediaFile?: File | Blob;
   onBack: () => void;
 }
 
-export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack }) => {
+export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, mediaFile, onBack }) => {
   // --- Project State ---
   const [project, setProject] = useState<Project>(() => {
     if (initialProject) {
@@ -70,6 +71,28 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
+  const mediaFileRef = useRef<File | Blob | null>(mediaFile || null);
+
+  useEffect(() => {
+    if (mediaFile) mediaFileRef.current = mediaFile;
+  }, [mediaFile]);
+
+  const getMediaBlob = async (): Promise<File | Blob> => {
+    if (mediaFileRef.current && mediaFileRef.current.size > 0) {
+      return mediaFileRef.current;
+    }
+    if (project.videoUrl && project.videoUrl.startsWith('blob:')) {
+      try {
+        const res = await fetch(project.videoUrl);
+        const b = await res.blob();
+        mediaFileRef.current = b;
+        return b;
+      } catch (e) {
+        console.warn('Could not fetch video blob:', e);
+      }
+    }
+    return new Blob([]);
+  };
 
   // Preload fonts
   useEffect(() => {
@@ -205,13 +228,14 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
     setProject((prev) => ({ ...prev, captions: updated }));
   };
 
-  // --- AI Transcription in English ---
+  // --- AI Transcription in English with Exact Audio Timestamps ---
   const handleAutoTranscribe = async () => {
     setIsTranscribing(true);
-    setTranscriptionStatus('Listening to audio track and generating English subtitles...');
+    setTranscriptionStatus('Analyzing audio & generating exact millisecond English subtitles...');
     try {
+      const fileToTranscribe = await getMediaBlob();
       const generated = await TranscriptionService.transcribeMedia(
-        new Blob([]),
+        fileToTranscribe,
         duration,
         whisperApiKey || undefined
       );
@@ -222,8 +246,8 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
         captions: generated,
         originalCaptions: generated,
       }));
-      setTranscriptionStatus('English subtitles generated!');
-      setTimeout(() => setTranscriptionStatus(''), 3000);
+      setTranscriptionStatus(`Generated ${generated.length} subtitles with exact timestamps!`);
+      setTimeout(() => setTranscriptionStatus(''), 4000);
     } catch (err: any) {
       console.error('Transcription error:', err);
       setTranscriptionStatus('Transcription failed: ' + err.message);
@@ -231,6 +255,15 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
       setIsTranscribing(false);
     }
   };
+
+  // Automatically transcribe when a user uploads their video file (Clipchamp style)
+  const hasAutoTranscribedRef = useRef(false);
+  useEffect(() => {
+    if (mediaFile && mediaFile.size > 0 && !hasAutoTranscribedRef.current) {
+      hasAutoTranscribedRef.current = true;
+      handleAutoTranscribe();
+    }
+  }, [mediaFile]);
 
   // --- Automatic Translation on Language Change with Timeline Preservation ---
   const handleLanguageChange = async (newLang: string) => {
@@ -425,12 +458,14 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
             <AnimatePresence>
               {activeCaption && (
                 <div
-                  className={`absolute left-4 right-4 pointer-events-none flex justify-center z-10 transition-all ${
+                  className={`absolute left-3 right-3 pointer-events-none flex justify-center z-10 transition-all ${
                     project.style.position === 'top'
-                      ? 'top-8'
+                      ? 'top-6'
                       : project.style.position === 'center'
                       ? 'top-1/2 -translate-y-1/2'
-                      : 'bottom-10'
+                      : project.aspectRatio === '9:16'
+                      ? 'bottom-20'
+                      : 'bottom-8'
                   }`}
                   style={{
                     marginBottom: project.style.position === 'bottom' ? `${project.style.yOffset}%` : undefined,
@@ -439,13 +474,20 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
                 >
                   <motion.div
                     key={activeCaption.id}
-                    initial={{ opacity: 0, scale: project.style.animation === 'pop' ? 0.8 : 1 }}
+                    initial={{ opacity: 0, scale: project.style.animation === 'pop' ? 0.85 : 1 }}
                     animate={{ opacity: 1, scale: 1 }}
                     exit={{ opacity: 0 }}
-                    transition={{ duration: 0.15 }}
+                    transition={{ duration: 0.12 }}
                     style={{
                       fontFamily: `"${project.style.fontFamily}", sans-serif`,
-                      fontSize: `${project.style.fontSize}px`,
+                      fontSize:
+                        project.aspectRatio === '9:16'
+                          ? `${Math.max(14, Math.round(project.style.fontSize * 0.72))}px`
+                          : project.aspectRatio === '1:1'
+                          ? `${Math.max(15, Math.round(project.style.fontSize * 0.82))}px`
+                          : project.aspectRatio === '4:5'
+                          ? `${Math.max(15, Math.round(project.style.fontSize * 0.78))}px`
+                          : `${project.style.fontSize}px`,
                       fontWeight: project.style.fontWeight,
                       color: project.style.color,
                       textTransform: project.style.textTransform,
@@ -456,13 +498,15 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
                           : 'none',
                       WebkitTextStroke:
                         project.style.strokeWidth > 0
-                          ? `${project.style.strokeWidth}px ${project.style.strokeColor}`
+                          ? `${Math.max(1, Math.round(project.style.strokeWidth * (project.aspectRatio === '9:16' ? 0.75 : 1)))}px ${project.style.strokeColor}`
                           : undefined,
                       backgroundColor: project.style.backgroundColor,
-                      padding: `${project.style.backgroundPadding}px ${project.style.backgroundPadding * 1.5}px`,
+                      padding: `${project.style.backgroundPadding}px ${project.style.backgroundPadding * 1.4}px`,
                       borderRadius: `${project.style.backgroundRadius}px`,
                     }}
-                    className="text-center max-w-[90%] leading-tight select-none"
+                    className={`text-center leading-snug select-none ${
+                      project.aspectRatio === '9:16' ? 'max-w-[80%]' : 'max-w-[86%]'
+                    }`}
                   >
                     {activeCaption.text}
                   </motion.div>

@@ -91,14 +91,15 @@ export class TranscriptionService {
   static async transcribeWithFasterWhisper(
     file: File | Blob,
     videoDuration = 15,
-    language?: string
+    language?: string,
+    task: 'translate' | 'transcribe' = 'translate'
   ): Promise<Caption[]> {
     const formData = new FormData();
     const fileName = (file as File).name || 'audio.mp4';
     formData.append('file', file, fileName);
 
-    const queryLang = language && language !== 'auto' ? `?language=${language}` : '';
-    const res = await fetch(`${this.LOCAL_WHISPER_URL}/transcribe${queryLang}`, {
+    const langParam = language && language !== 'auto' ? `&language=${language}` : '';
+    const res = await fetch(`${this.LOCAL_WHISPER_URL}/transcribe?task=${task}${langParam}`, {
       method: 'POST',
       body: formData,
     });
@@ -116,20 +117,21 @@ export class TranscriptionService {
    * AI Transcription:
    * 1. Uses local Faster-Whisper server if running (100% free, offline, word-level timestamps).
    * 2. Uses OpenAI Whisper Cloud API if key is configured.
-   * 3. Otherwise, generates intelligent speech segmentation based on video duration.
+   * 3. For sample video demo mode, returns demo captions.
    */
   static async transcribeMedia(
     file: File | Blob,
     videoDuration: number,
     apiKey?: string,
-    language?: string
+    language?: string,
+    task: 'translate' | 'transcribe' = 'translate'
   ): Promise<Caption[]> {
     // 1. Check if local Faster-Whisper is active
     if (file && file.size > 0) {
       const isLocalActive = await this.checkLocalFasterWhisper();
       if (isLocalActive) {
         try {
-          return await this.transcribeWithFasterWhisper(file, videoDuration, language);
+          return await this.transcribeWithFasterWhisper(file, videoDuration, language, task);
         } catch (e: any) {
           console.warn('Local Faster-Whisper failed, attempting cloud fallback:', e);
         }
@@ -139,12 +141,27 @@ export class TranscriptionService {
     // 2. OpenAI Whisper Cloud API
     const key = apiKey || process.env.NEXT_PUBLIC_OPENAI_API_KEY;
     if (key && file && file.size > 0) {
-      return this.transcribeWithWhisper(file, key, videoDuration);
+      try {
+        return await this.transcribeWithWhisper(file, key, videoDuration, task);
+      } catch (e: any) {
+        console.warn('OpenAI Whisper cloud API failed:', e);
+        if (e.message && (e.message.includes('quota') || e.message.includes('credit') || e.message.includes('429'))) {
+          throw new Error('OpenAI API quota exhausted. Please start the local Faster-Whisper server with "npm run whisper" or "start_whisper.bat" for 100% free offline speech recognition.');
+        }
+        throw e;
+      }
     }
 
-    // High quality intelligent auto-transcription simulation
-    // Simulates realistic audio processing latency
-    await new Promise((resolve) => setTimeout(resolve, 1800));
+    // 3. If a real video file was uploaded but neither backend succeeded:
+    if (file && file.size > 0) {
+      throw new Error(
+        'Speech-to-text requires either the local Faster-Whisper server or an OpenAI API key. ' +
+        'To use free offline AI: run "npm run whisper" or double-click "start_whisper.bat".'
+      );
+    }
+
+    // 4. Sample video demo mode only
+    await new Promise((resolve) => setTimeout(resolve, 800));
 
     const samplePhrases = [
       'Welcome to this video presentation.',
@@ -184,16 +201,28 @@ export class TranscriptionService {
         ];
   }
 
-  private static async transcribeWithWhisper(file: File | Blob, apiKey: string, videoDuration = 15): Promise<Caption[]> {
+  private static async transcribeWithWhisper(
+    file: File | Blob,
+    apiKey: string,
+    videoDuration = 15,
+    task: 'translate' | 'transcribe' = 'translate'
+  ): Promise<Caption[]> {
     const formData = new FormData();
     const fileName = (file as File).name || 'audio.mp4';
     formData.append('file', file, fileName);
     formData.append('model', 'whisper-1');
     formData.append('response_format', 'verbose_json');
-    formData.append('timestamp_granularities[]', 'word');
-    formData.append('timestamp_granularities[]', 'segment');
 
-    const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    const endpoint = task === 'translate'
+      ? 'https://api.openai.com/v1/audio/translations'
+      : 'https://api.openai.com/v1/audio/transcriptions';
+
+    if (task === 'transcribe') {
+      formData.append('timestamp_granularities[]', 'word');
+      formData.append('timestamp_granularities[]', 'segment');
+    }
+
+    const res = await fetch(endpoint, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,

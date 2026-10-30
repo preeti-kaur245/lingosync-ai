@@ -91,6 +91,7 @@ export interface Project {
   targetLang: string;
   aspectRatio: AspectRatio;
   fileName?: string;
+  mediaFile?: File | Blob;
 }
 
 export interface FontOption {

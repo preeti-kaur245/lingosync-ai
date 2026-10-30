@@ -52,13 +52,37 @@ export class TranslationService {
       return text;
     }
 
+    // Tier 1: Fast Google Translate Free Web Endpoint
     try {
-      // MyMemory Public Free Translation API endpoint
+      const gUrl = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${encodeURIComponent(
+        sourceLang
+      )}&tl=${encodeURIComponent(targetLang)}&dt=t&q=${encodeURIComponent(text)}`;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 4500);
+
+      const res = await fetch(gUrl, { signal: controller.signal });
+      clearTimeout(timer);
+
+      if (res.ok) {
+        const raw = await res.json();
+        if (Array.isArray(raw) && Array.isArray(raw[0])) {
+          const translated = raw[0].map((item: any) => item[0]).join('');
+          if (translated && translated.trim().length > 0) {
+            return translated.trim();
+          }
+        }
+      }
+    } catch {
+      // Fall through to Tier 2
+    }
+
+    // Tier 2: MyMemory Free Translation API
+    try {
       const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(
         text
-      )}&langpair=${sourceLang}|${targetLang}`;
+      )}&langpair=${encodeURIComponent(sourceLang)}|${encodeURIComponent(targetLang)}`;
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 4000);
+      const timer = setTimeout(() => controller.abort(), 4500);
 
       const response = await fetch(url, { signal: controller.signal });
       clearTimeout(timer);
@@ -76,7 +100,7 @@ export class TranslationService {
       // Fallback below
     }
 
-    // High quality offline fallback translations for popular languages
+    // Tier 3: High quality offline fallback translations for popular languages
     return this.fallbackTranslate(text, targetLang);
   }
 

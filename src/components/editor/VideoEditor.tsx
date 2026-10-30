@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Maximize2,
+  Globe, Play, Pause, SkipBack, SkipForward, Volume2, VolumeX, Maximize2,
   Type, Palette, Languages, Download, ArrowLeft, Trash2, Plus,
   Sparkles, Loader2, Copy, Check, Settings, FolderKanban, Clock, Scissors, Film
 } from 'lucide-react';
@@ -123,6 +123,16 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
     FontService.loadGoogleFont(project.style.fontFamily);
     setSavedProjects(storageService.getProjects());
   }, [project.style.fontFamily]);
+
+  const hasAutoTranscribedRef = useRef(false);
+
+  // Automatically transcribe and translate to English subtitles when user uploads a video with 0 captions
+  useEffect(() => {
+    if (!hasAutoTranscribedRef.current && project.videoUrl && project.captions.length === 0 && !isTranscribing) {
+      hasAutoTranscribedRef.current = true;
+      handleAutoTranscribe();
+    }
+  }, [project.videoUrl, project.captions.length]);
 
   // Track video container dimensions with ResizeObserver for exact preview-export parity
   useEffect(() => {
@@ -304,44 +314,50 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
     setIsTranscribing(true);
     setTranscriptionStatus(
       isLocalWhisperConnected
-        ? 'Transcribing audio with local Faster-Whisper (word-level precision)...'
-        : 'Listening to audio track and generating synchronized subtitles...'
+        ? 'Transcribing audio with local Faster-Whisper (translating speech to English)...'
+        : 'Converting video speech to English subtitles with AI...'
     );
     try {
-      let mediaBlob: Blob = new Blob([]);
-      if (project.videoUrl) {
+      let fileToTranscribe: File | Blob | undefined = project.mediaFile;
+      if (!fileToTranscribe && project.videoUrl) {
         try {
           const res = await fetch(project.videoUrl);
           if (res.ok) {
-            mediaBlob = await res.blob();
+            fileToTranscribe = await res.blob();
           }
         } catch (e) {
           console.warn('Could not fetch media blob from videoUrl, using fallback:', e);
         }
       }
 
+      if (!fileToTranscribe || fileToTranscribe.size === 0) {
+        throw new Error('No video media file available to transcribe. Please upload a video.');
+      }
+
       const generated = await TranscriptionService.transcribeMedia(
-        mediaBlob,
+        fileToTranscribe,
         duration,
         whisperApiKey || undefined,
-        project.sourceLang
+        project.sourceLang,
+        'translate' // Converts ANY spoken language into English subtitles!
       );
+
       setProject((prev) => ({
         ...prev,
-        sourceLang: 'en',
+        sourceLang: 'auto',
         targetLang: 'en',
         captions: generated,
         originalCaptions: generated,
       }));
       setTranscriptionStatus(
         isLocalWhisperConnected
-          ? 'Generated via local Faster-Whisper with word timestamps!'
-          : 'Subtitles generated successfully!'
+          ? 'Generated English subtitles via local Faster-Whisper!'
+          : 'English subtitles generated & synchronized successfully!'
       );
-      setTimeout(() => setTranscriptionStatus(''), 3000);
+      setTimeout(() => setTranscriptionStatus(''), 4000);
     } catch (err: any) {
       console.error('Transcription error:', err);
-      setTranscriptionStatus('Transcription failed: ' + err.message);
+      setTranscriptionStatus('Transcription notice: ' + err.message);
     } finally {
       setIsTranscribing(false);
     }
@@ -349,25 +365,36 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
 
   // --- Automatic Translation on Language Change with Timeline Preservation ---
   const handleLanguageChange = async (newLang: string) => {
-    if (newLang === project.targetLang) return;
+    if (newLang === project.targetLang && project.captions.length > 0) return;
 
     // If switching to English, immediately restore the base English timeline
     if (newLang === 'en') {
-      const restored = project.originalCaptions || project.captions;
+      const restored = (project.originalCaptions && project.originalCaptions.length > 0)
+        ? project.originalCaptions
+        : project.captions;
       setProject((prev) => ({
         ...prev,
         targetLang: 'en',
         captions: restored,
       }));
+      setTranscriptionStatus('Restored original English subtitles.');
+      setTimeout(() => setTranscriptionStatus(''), 2500);
       return;
     }
 
     // Otherwise translate from the base English captions preserving the exact same timeline
     setIsTranslating(true);
+    const targetLangObj = SUPPORTED_LANGUAGES.find((l) => l.code === newLang);
+    const langLabel = targetLangObj ? `${targetLangObj.name} (${targetLangObj.nativeName})` : newLang;
+    setTranscriptionStatus(`Translating subtitles to ${langLabel}...`);
     try {
       const baseCaps = (project.originalCaptions && project.originalCaptions.length > 0)
         ? project.originalCaptions
         : project.captions;
+
+      if (!baseCaps || baseCaps.length === 0) {
+        throw new Error('No subtitles available to translate. Please generate English subtitles first.');
+      }
 
       const translated = await TranslationService.translateCaptions(
         baseCaps,
@@ -381,8 +408,11 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
         originalCaptions: prev.originalCaptions || baseCaps,
         captions: translated,
       }));
-    } catch (err) {
+      setTranscriptionStatus(`Translated to ${langLabel} with preserved timeline!`);
+      setTimeout(() => setTranscriptionStatus(''), 3500);
+    } catch (err: any) {
       console.error('Translation error on language change:', err);
+      setTranscriptionStatus('Translation notice: ' + err.message);
     } finally {
       setIsTranslating(false);
     }
@@ -418,21 +448,22 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
           detail: 'No transcript detected. Transcribing video audio first...',
         }));
 
-        let mediaBlob: Blob = new Blob([]);
-        if (project.videoUrl) {
+        let fileToTranscribe: File | Blob | undefined = project.mediaFile;
+        if (!fileToTranscribe && project.videoUrl) {
           try {
             const res = await fetch(project.videoUrl);
-            if (res.ok) mediaBlob = await res.blob();
+            if (res.ok) fileToTranscribe = await res.blob();
           } catch (e) {
             console.warn('Could not fetch media blob:', e);
           }
         }
 
         activeCaptions = await TranscriptionService.transcribeMedia(
-          mediaBlob,
+          fileToTranscribe || new Blob([]),
           duration,
           whisperApiKey || undefined,
-          project.sourceLang
+          project.sourceLang,
+          'translate'
         );
 
         setProject((prev) => ({
@@ -763,6 +794,43 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
               </div>
             )}
 
+            {/* Language Preference Dropdown */}
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/5 border border-white/10 hover:border-brand-primary/40 text-xs text-white transition-all shadow-sm">
+              <Globe size={13} className="text-brand-primary flex-shrink-0" />
+              <span className="text-[10px] text-gray-400 uppercase font-semibold hidden md:inline">Language:</span>
+              <select
+                value={project.targetLang}
+                onChange={(e) => handleLanguageChange(e.target.value)}
+                disabled={isTranslating}
+                className="bg-transparent text-white text-xs font-bold outline-none cursor-pointer"
+                title="Select Subtitle Language Preference"
+              >
+                <option value="en" className="bg-neutral-900 text-white">English (Original)</option>
+                <option value="hi" className="bg-neutral-900 text-white">हिन्दी (Hindi)</option>
+                <option value="es" className="bg-neutral-900 text-white">Español (Spanish)</option>
+                <option value="fr" className="bg-neutral-900 text-white">Français (French)</option>
+                <option value="de" className="bg-neutral-900 text-white">Deutsch (German)</option>
+                <option value="ja" className="bg-neutral-900 text-white">日本語 (Japanese)</option>
+                <option value="zh" className="bg-neutral-900 text-white">中文 (Chinese)</option>
+                <option value="ar" className="bg-neutral-900 text-white">العربية (Arabic)</option>
+                <option value="pt" className="bg-neutral-900 text-white">Português (Portuguese)</option>
+                <option value="ru" className="bg-neutral-900 text-white">Русский (Russian)</option>
+                <option value="it" className="bg-neutral-900 text-white">Italiano (Italian)</option>
+                <option value="ko" className="bg-neutral-900 text-white">한국어 (Korean)</option>
+                <option value="pa" className="bg-neutral-900 text-white">ਪੰਜਾਬੀ (Punjabi)</option>
+                <option value="bn" className="bg-neutral-900 text-white">বাংলা (Bengali)</option>
+                <option value="ur" className="bg-neutral-900 text-white">اردو (Urdu)</option>
+                {SUPPORTED_LANGUAGES.filter(
+                  (l) => !['en', 'hi', 'es', 'fr', 'de', 'ja', 'zh', 'ar', 'pt', 'ru', 'it', 'ko', 'pa', 'bn', 'ur'].includes(l.code)
+                ).map((lang) => (
+                  <option key={lang.code} value={lang.code} className="bg-neutral-900 text-white">
+                    {lang.name} ({lang.nativeName})
+                  </option>
+                ))}
+              </select>
+              {isTranslating && <Loader2 size={12} className="animate-spin text-brand-primary flex-shrink-0" />}
+            </div>
+
             {/* AI Short Clips Button */}
             <button
               onClick={() => setIsClipConfigOpen(true)}
@@ -825,6 +893,25 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
               className="w-full h-full object-contain cursor-pointer"
               playsInline
             />
+
+            {/* AI Speech-to-Text Transcribing Overlay */}
+            {isTranscribing && (
+              <div className="absolute inset-0 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center z-30">
+                <div className="w-16 h-16 rounded-2xl bg-brand-primary/20 border border-brand-primary/40 flex items-center justify-center text-brand-primary mb-4 shadow-lg shadow-brand-primary/20">
+                  <Sparkles size={32} className="animate-spin" />
+                </div>
+                <h4 className="text-white text-base font-bold mb-2">
+                  Converting Speech to English Subtitles...
+                </h4>
+                <p className="text-gray-300 text-xs max-w-sm mb-4 leading-relaxed">
+                  {transcriptionStatus || 'Listening to video speech in any language and creating synchronized English subtitles.'}
+                </p>
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/10 text-[11px] text-gray-300">
+                  <Loader2 size={13} className="animate-spin text-brand-primary" />
+                  <span>{isLocalWhisperConnected ? 'Powered by Local Faster-Whisper AI' : 'Powered by Whisper AI Engine'}</span>
+                </div>
+              </div>
+            )}
 
             {/* Dynamic Styled Subtitle Overlay rendered via SubtitleLayoutService */}
             <AnimatePresence>
@@ -1430,14 +1517,21 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
               <div className="flex flex-wrap gap-1.5">
                 {[
                   { code: 'en', label: 'English (Original)' },
-                  { code: 'es', label: 'Spanish' },
-                  { code: 'hi', label: 'Hindi' },
-                  { code: 'fr', label: 'French' },
-                  { code: 'de', label: 'German' },
-                  { code: 'ja', label: 'Japanese' },
-                  { code: 'zh', label: 'Chinese' },
-                  { code: 'ar', label: 'Arabic' },
-                  { code: 'pt', label: 'Portuguese' },
+                  { code: 'hi', label: 'हिन्दी (Hindi)' },
+                  { code: 'es', label: 'Español (Spanish)' },
+                  { code: 'fr', label: 'Français (French)' },
+                  { code: 'de', label: 'Deutsch (German)' },
+                  { code: 'ja', label: '日本語 (Japanese)' },
+                  { code: 'zh', label: '中文 (Chinese)' },
+                  { code: 'ar', label: 'العربية (Arabic)' },
+                  { code: 'pt', label: 'Português' },
+                  { code: 'ru', label: 'Русский' },
+                  { code: 'it', label: 'Italiano' },
+                  { code: 'ko', label: '한국어' },
+                  { code: 'pa', label: 'ਪੰਜਾਬੀ' },
+                  { code: 'bn', label: 'বাংলা' },
+                  { code: 'ur', label: 'اردو' },
+                  { code: 'tr', label: 'Türkçe' },
                 ].map((item) => (
                   <button
                     key={item.code}
@@ -1550,21 +1644,35 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
               </div>
               <p className="text-[11px] text-gray-400 leading-relaxed">
                 {isLocalWhisperConnected
-                  ? 'Your local Faster-Whisper server is active at http://127.0.0.1:8000. Subtitles are transcribed offline on your device with CTranslate2 and PyAV.'
-                  : 'To transcribe videos offline with faster-whisper without an API key, run this in your terminal:'}
+                  ? 'Your local Faster-Whisper server is active at http://127.0.0.1:8000. Any language video is automatically translated to English subtitles locally with CTranslate2 and FFmpeg.'
+                  : 'To transcribe & translate any video 100% free and offline without OpenAI credits, launch the local server:'}
               </p>
               {!isLocalWhisperConnected && (
-                <div className="mt-3 p-2.5 rounded-xl bg-black/50 border border-white/10 font-mono text-[11px] text-brand-primary flex items-center justify-between">
-                  <code>python server/whisper_server.py</code>
-                  <button
-                    onClick={() => {
-                      navigator.clipboard.writeText('python server/whisper_server.py');
-                      alert('Command copied! Run it in PowerShell or Terminal to launch Faster-Whisper.');
-                    }}
-                    className="ml-2 px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-white text-[10px]"
-                  >
-                    Copy
-                  </button>
+                <div className="mt-3 space-y-2">
+                  <div className="p-2.5 rounded-xl bg-black/50 border border-white/10 font-mono text-[11px] text-brand-primary flex items-center justify-between">
+                    <code>start_whisper.bat</code>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText('.\\start_whisper.bat');
+                        alert('Copied! Double-click start_whisper.bat in the project folder or run it in PowerShell.');
+                      }}
+                      className="ml-2 px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-white text-[10px]"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                  <div className="p-2.5 rounded-xl bg-black/50 border border-white/10 font-mono text-[11px] text-gray-300 flex items-center justify-between">
+                    <code>npm run whisper</code>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText('npm run whisper');
+                        alert('Copied "npm run whisper" to clipboard!');
+                      }}
+                      className="ml-2 px-2 py-1 rounded bg-white/10 hover:bg-white/20 text-white text-[10px]"
+                    >
+                      Copy
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

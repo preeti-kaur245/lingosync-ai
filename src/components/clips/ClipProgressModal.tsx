@@ -127,3 +127,4 @@ export const ClipProgressModal: React.FC<ClipProgressModalProps> = ({
     </div>
   );
 };
+

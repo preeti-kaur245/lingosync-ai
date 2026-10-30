@@ -362,3 +362,4 @@ export const ClipConfigModal: React.FC<ClipConfigModalProps> = ({
     </div>
   );
 };
+

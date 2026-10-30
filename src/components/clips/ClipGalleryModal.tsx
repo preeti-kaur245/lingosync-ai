@@ -351,3 +351,4 @@ export const ClipGalleryModal: React.FC<ClipGalleryModalProps> = ({
     </div>
   );
 };
+

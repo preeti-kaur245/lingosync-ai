@@ -14,6 +14,17 @@ import subprocess
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.parse
 
+# PyAV 19 compatibility patch for faster-whisper
+try:
+    import av
+    _orig_av_open = av.open
+    def _patched_av_open(*args, **kwargs):
+        kwargs.pop("metadata_errors", None)
+        return _orig_av_open(*args, **kwargs)
+    av.open = _patched_av_open
+except Exception:
+    pass
+
 try:
     from faster_whisper import WhisperModel
 except ImportError:
@@ -143,6 +154,9 @@ class WhisperRequestHandler(BaseHTTPRequestHandler):
         language = query_params.get("language", [None])[0]
         if language == "auto":
             language = None
+        task = query_params.get("task", ["translate"])[0]
+        if task not in ("translate", "transcribe"):
+            task = "translate"
 
         content_length = int(self.headers.get("Content-Length", 0))
         content_type = self.headers.get("Content-Type", "")
@@ -164,7 +178,7 @@ class WhisperRequestHandler(BaseHTTPRequestHandler):
                 audio_input = file_path
             else:
                 if "multipart/form-data" in content_type:
-                    boundary = content_type.split("boundary=")[-1].strip()
+                    boundary = content_type.split("boundary=")[-1].strip().strip('"').strip("'")
                     boundary_bytes = ("--" + boundary).encode()
                     parts = body.split(boundary_bytes)
                     file_bytes = None
@@ -172,7 +186,12 @@ class WhisperRequestHandler(BaseHTTPRequestHandler):
                         if b'filename="' in part:
                             header_end = part.find(b"\r\n\r\n")
                             if header_end != -1:
-                                file_bytes = part[header_end + 4 :].rstrip(b"\r\n--")
+                                raw_chunk = part[header_end + 4 :]
+                                if raw_chunk.endswith(b"\r\n"):
+                                    raw_chunk = raw_chunk[:-2]
+                                if raw_chunk.endswith(b"--"):
+                                    raw_chunk = raw_chunk[:-2]
+                                file_bytes = raw_chunk
                                 break
                     if not file_bytes:
                         file_bytes = body
@@ -186,7 +205,7 @@ class WhisperRequestHandler(BaseHTTPRequestHandler):
 
             # Transcribe with faster-whisper
             model = get_model(model_size=model_size)
-            print(f"[Faster-Whisper] Starting transcription (model={model_size}, lang={language or 'auto'})...")
+            print(f"[Faster-Whisper] Starting {task} (model={model_size}, lang={language or 'auto'}, task={task})...")
 
             segments_generator, info = model.transcribe(
                 audio_input,
@@ -194,6 +213,7 @@ class WhisperRequestHandler(BaseHTTPRequestHandler):
                 word_timestamps=True,
                 vad_filter=True,
                 language=language,
+                task=task,
             )
 
             segments_list = []

@@ -9,6 +9,17 @@ import os
 import argparse
 import json
 
+# PyAV 19 compatibility patch for faster-whisper
+try:
+    import av
+    _orig_av_open = av.open
+    def _patched_av_open(*args, **kwargs):
+        kwargs.pop("metadata_errors", None)
+        return _orig_av_open(*args, **kwargs)
+    av.open = _patched_av_open
+except Exception:
+    pass
+
 try:
     from faster_whisper import WhisperModel
 except ImportError:
@@ -35,6 +46,7 @@ def main():
     parser.add_argument("--format", "-f", choices=["srt", "vtt", "json"], default="srt", help="Output format")
     parser.add_argument("--model", "-m", default="base", choices=["tiny", "base", "small", "medium", "large-v3"], help="Model size")
     parser.add_argument("--language", "-l", default=None, help="Spoken language code (e.g. 'en', 'es', 'hi')")
+    parser.add_argument("--task", "-t", default="translate", choices=["translate", "transcribe"], help="Task: 'translate' to English (default) or 'transcribe' in original language")
     parser.add_argument("--device", "-d", default="cpu", choices=["cpu", "cuda"], help="Inference device")
 
     args = parser.parse_args()
@@ -46,13 +58,14 @@ def main():
     print(f"Loading faster-whisper model '{args.model}' on {args.device}...")
     model = WhisperModel(args.model, device=args.device, compute_type="int8")
 
-    print(f"Transcribing '{args.input_file}' with word timestamps...")
+    print(f"Processing '{args.input_file}' (task={args.task}, lang={args.language or 'auto'}) with word timestamps...")
     segments, info = model.transcribe(
         args.input_file,
         beam_size=5,
         word_timestamps=True,
         vad_filter=True,
         language=args.language,
+        task=args.task,
     )
 
     print(f"Detected language: {info.language} (probability: {info.language_probability:.2f})")

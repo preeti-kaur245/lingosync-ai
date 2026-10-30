@@ -7,7 +7,7 @@ import {
   Type, Palette, Languages, Download, ArrowLeft, Trash2, Plus,
   Sparkles, Loader2, Copy, Check, Settings, FolderKanban, Clock
 } from 'lucide-react';
-import { Caption, Project, SubtitleStyle } from '@/types';
+import { Caption, Project, SubtitleStyle, AspectRatio } from '@/types';
 import { STYLE_PRESETS, AVAILABLE_FONTS, FontService } from '@/services/font.service';
 import { SUPPORTED_LANGUAGES, TranslationService } from '@/services/translation.service';
 import { TranscriptionService } from '@/services/transcription.service';
@@ -22,22 +22,31 @@ interface VideoEditorProps {
 export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack }) => {
   // --- Project State ---
   const [project, setProject] = useState<Project>(() => {
-    if (initialProject) return initialProject;
+    if (initialProject) {
+      return {
+        ...initialProject,
+        aspectRatio: initialProject.aspectRatio || '16:9',
+        originalCaptions: initialProject.originalCaptions || initialProject.captions,
+      };
+    }
+    const defaultCaptions = [
+      { id: 'c1', start: 0.5, end: 3.5, text: 'Welcome to the future of AI video translation!' },
+      { id: 'c2', start: 3.8, end: 7.0, text: 'Translate and style your subtitles in 50+ languages.' },
+      { id: 'c3', start: 7.5, end: 11.0, text: 'Customize fonts, colors, and export directly in your browser.' },
+      { id: 'c4', start: 11.5, end: 14.5, text: 'Your video never leaves your device.' },
+    ];
     return {
       id: `proj_${Date.now()}`,
       title: 'Global Video Project',
       createdAt: Date.now(),
       updatedAt: Date.now(),
       duration: 15,
-      captions: [
-        { id: 'c1', start: 0.5, end: 3.5, text: 'Welcome to the future of AI video translation!' },
-        { id: 'c2', start: 3.8, end: 7.0, text: 'Translate and style your subtitles in 50+ languages.' },
-        { id: 'c3', start: 7.5, end: 11.0, text: 'Customize fonts, colors, and export directly in your browser.' },
-        { id: 'c4', start: 11.5, end: 14.5, text: 'Your video never leaves your device.' },
-      ],
+      captions: defaultCaptions,
+      originalCaptions: defaultCaptions,
       style: STYLE_PRESETS[0],
       sourceLang: 'en',
-      targetLang: 'es',
+      targetLang: 'en',
+      aspectRatio: '16:9',
     };
   });
 
@@ -196,18 +205,24 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
     setProject((prev) => ({ ...prev, captions: updated }));
   };
 
-  // --- AI Transcription ---
+  // --- AI Transcription in English ---
   const handleAutoTranscribe = async () => {
     setIsTranscribing(true);
-    setTranscriptionStatus('Listening to audio track and transcribing...');
+    setTranscriptionStatus('Listening to audio track and generating English subtitles...');
     try {
       const generated = await TranscriptionService.transcribeMedia(
         new Blob([]),
         duration,
         whisperApiKey || undefined
       );
-      setProject((prev) => ({ ...prev, captions: generated }));
-      setTranscriptionStatus('Transcription complete!');
+      setProject((prev) => ({
+        ...prev,
+        sourceLang: 'en',
+        targetLang: 'en',
+        captions: generated,
+        originalCaptions: generated,
+      }));
+      setTranscriptionStatus('English subtitles generated!');
       setTimeout(() => setTranscriptionStatus(''), 3000);
     } catch (err: any) {
       console.error('Transcription error:', err);
@@ -217,21 +232,49 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
     }
   };
 
-  // --- Translation ---
-  const handleTranslateAll = async () => {
+  // --- Automatic Translation on Language Change with Timeline Preservation ---
+  const handleLanguageChange = async (newLang: string) => {
+    if (newLang === project.targetLang) return;
+
+    // If switching to English, immediately restore the base English timeline
+    if (newLang === 'en') {
+      const restored = project.originalCaptions || project.captions;
+      setProject((prev) => ({
+        ...prev,
+        targetLang: 'en',
+        captions: restored,
+      }));
+      return;
+    }
+
+    // Otherwise translate from the base English captions preserving the exact same timeline
     setIsTranslating(true);
     try {
+      const baseCaps = (project.originalCaptions && project.originalCaptions.length > 0)
+        ? project.originalCaptions
+        : project.captions;
+
       const translated = await TranslationService.translateCaptions(
-        project.captions,
-        project.targetLang,
-        project.sourceLang
+        baseCaps,
+        newLang,
+        'en'
       );
-      setProject((prev) => ({ ...prev, captions: translated }));
+
+      setProject((prev) => ({
+        ...prev,
+        targetLang: newLang,
+        originalCaptions: prev.originalCaptions || baseCaps,
+        captions: translated,
+      }));
     } catch (err) {
-      console.error('Translation error:', err);
+      console.error('Translation error on language change:', err);
     } finally {
       setIsTranslating(false);
     }
+  };
+
+  const handleTranslateAll = async () => {
+    await handleLanguageChange(project.targetLang);
   };
 
   // Active caption
@@ -305,30 +348,48 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
       {/* 2. MAIN CENTER AREA: Top Bar + Video Player */}
       <main className="flex-1 flex flex-col min-w-0 bg-neutral-950">
         {/* Top Header */}
-        <header className="h-14 border-b border-white/10 px-6 flex items-center justify-between bg-black/40 backdrop-blur-md">
+        <header className="h-14 border-b border-white/10 px-4 sm:px-6 flex items-center justify-between bg-black/40 backdrop-blur-md">
           <div className="flex items-center gap-3">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
             <input
               type="text"
               value={project.title}
               onChange={(e) => setProject({ ...project, title: e.target.value })}
-              className="bg-transparent font-bold text-sm sm:text-base text-white outline-none border-b border-transparent focus:border-brand-primary px-1 transition-all"
+              className="bg-transparent font-bold text-xs sm:text-sm md:text-base text-white outline-none border-b border-transparent focus:border-brand-primary px-1 transition-all max-w-[130px] sm:max-w-xs truncate"
             />
           </div>
 
-          <div className="flex items-center gap-3">
+          {/* Aspect Ratio Format Switcher */}
+          <div className="flex items-center bg-white/5 border border-white/10 rounded-full p-1 gap-1">
+            {(['16:9', '9:16', '1:1', '4:5'] as AspectRatio[]).map((ratio) => (
+              <button
+                key={ratio}
+                onClick={() => setProject({ ...project, aspectRatio: ratio })}
+                title={`Aspect Ratio: ${ratio}`}
+                className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all ${
+                  (project.aspectRatio || '16:9') === ratio
+                    ? 'bg-brand-primary text-white shadow-md'
+                    : 'text-gray-400 hover:text-white'
+                }`}
+              >
+                {ratio}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-2 sm:gap-3">
             <button
               onClick={handleAutoTranscribe}
               disabled={isTranscribing}
-              className="px-4 py-1.5 rounded-full bg-brand-primary/15 hover:bg-brand-primary/25 border border-brand-primary/30 text-brand-primary text-xs font-bold flex items-center gap-1.5 transition-all disabled:opacity-50"
+              className="px-3 sm:px-4 py-1.5 rounded-full bg-brand-primary/15 hover:bg-brand-primary/25 border border-brand-primary/30 text-brand-primary text-xs font-bold flex items-center gap-1.5 transition-all disabled:opacity-50"
             >
               {isTranscribing ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
-              <span>{isTranscribing ? 'Transcribing...' : 'AI Auto-Transcribe'}</span>
+              <span className="hidden sm:inline">{isTranscribing ? 'Transcribing...' : 'English Auto-Subtitles'}</span>
             </button>
 
             <button
               onClick={() => setIsExportModalOpen(true)}
-              className="glow-button px-5 py-1.5 rounded-full bg-brand-primary text-white text-xs font-bold flex items-center gap-1.5 transition-all"
+              className="glow-button px-4 sm:px-5 py-1.5 rounded-full bg-brand-primary text-white text-xs font-bold flex items-center gap-1.5 transition-all"
             >
               <Download size={14} />
               <span>Export</span>
@@ -340,7 +401,15 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
         <div className="flex-1 relative bg-black flex items-center justify-center p-4 sm:p-8 overflow-hidden group">
           <div
             ref={videoContainerRef}
-            className="relative max-w-4xl w-full aspect-video bg-neutral-900 rounded-2xl sm:rounded-3xl overflow-hidden shadow-2xl ring-1 ring-white/15"
+            className={`relative overflow-hidden bg-neutral-900 rounded-2xl sm:rounded-3xl shadow-2xl ring-1 ring-white/15 transition-all duration-300 flex items-center justify-center ${
+              project.aspectRatio === '9:16'
+                ? 'aspect-[9/16] h-[75vh] max-w-sm'
+                : project.aspectRatio === '1:1'
+                ? 'aspect-square h-[70vh] max-w-lg'
+                : project.aspectRatio === '4:5'
+                ? 'aspect-[4/5] h-[75vh] max-w-md'
+                : 'aspect-video w-full max-w-4xl'
+            }`}
           >
             <video
               ref={videoRef}
@@ -772,18 +841,51 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
         {activeTab === 'translate' && (
           <div className="flex-1 overflow-y-auto p-4 space-y-6">
             <div className="p-4 rounded-2xl bg-brand-primary/10 border border-brand-primary/20">
-              <span className="text-xs font-bold text-white block mb-1">AI Translation Engine</span>
+              <span className="text-xs font-bold text-white block mb-1">AI Language Engine</span>
               <p className="text-[11px] text-gray-400 leading-relaxed">
-                Translate all subtitle cues instantly while keeping timestamps and formatting synchronized.
+                Timeline timestamps remain identical. Select any language below to translate instantly.
               </p>
             </div>
 
+            {/* Quick Switch Pills */}
             <div className="space-y-2">
-              <label className="text-[10px] uppercase font-bold text-gray-400 block">Target Language</label>
+              <label className="text-[10px] uppercase font-bold text-gray-400 block">Popular Languages</label>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  { code: 'en', label: 'English (Original)' },
+                  { code: 'es', label: 'Spanish' },
+                  { code: 'hi', label: 'Hindi' },
+                  { code: 'fr', label: 'French' },
+                  { code: 'de', label: 'German' },
+                  { code: 'ja', label: 'Japanese' },
+                  { code: 'zh', label: 'Chinese' },
+                  { code: 'ar', label: 'Arabic' },
+                  { code: 'pt', label: 'Portuguese' },
+                ].map((item) => (
+                  <button
+                    key={item.code}
+                    onClick={() => handleLanguageChange(item.code)}
+                    disabled={isTranslating}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
+                      project.targetLang === item.code
+                        ? 'bg-brand-primary text-white border-brand-primary shadow-sm'
+                        : 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* All Languages Dropdown */}
+            <div className="space-y-2">
+              <label className="text-[10px] uppercase font-bold text-gray-400 block">All 50+ Languages</label>
               <select
                 value={project.targetLang}
-                onChange={(e) => setProject({ ...project, targetLang: e.target.value })}
-                className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-xs sm:text-sm text-white outline-none focus:border-brand-primary"
+                onChange={(e) => handleLanguageChange(e.target.value)}
+                disabled={isTranslating}
+                className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-xs sm:text-sm text-white outline-none focus:border-brand-primary cursor-pointer"
               >
                 {SUPPORTED_LANGUAGES.map((lang) => (
                   <option key={lang.code} value={lang.code} className="bg-neutral-900">
@@ -799,7 +901,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
               className="glow-button w-full py-3.5 rounded-xl bg-brand-primary hover:brightness-110 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 transition-all disabled:opacity-50"
             >
               {isTranslating ? <Loader2 size={16} className="animate-spin" /> : <Languages size={16} />}
-              <span>{isTranslating ? 'Translating Captions...' : 'Translate All Captions'}</span>
+              <span>{isTranslating ? 'Translating Captions...' : `Re-Translate (${project.targetLang.toUpperCase()})`}</span>
             </button>
           </div>
         )}
@@ -866,6 +968,7 @@ export const VideoEditor: React.FC<VideoEditorProps> = ({ initialProject, onBack
         captions={project.captions}
         style={project.style}
         projectTitle={project.title}
+        aspectRatio={project.aspectRatio}
       />
     </div>
   );

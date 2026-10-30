@@ -32,6 +32,8 @@ export interface SubtitleStyle {
   animation: SubtitleAnimation;
 }
 
+export type AspectRatio = '16:9' | '9:16' | '1:1' | '4:5';
+
 export interface Project {
   id: string;
   title: string;
@@ -42,9 +44,11 @@ export interface Project {
   videoBlobKey?: string; // IndexedDB key
   thumbnailUrl?: string;
   captions: Caption[];
+  originalCaptions?: Caption[]; // Base English timeline captions
   style: SubtitleStyle;
   sourceLang: string;
   targetLang: string;
+  aspectRatio: AspectRatio;
   fileName?: string;
 }
 

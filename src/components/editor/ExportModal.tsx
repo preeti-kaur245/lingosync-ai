@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { X, Download, FileText, Film, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
-import { Caption, SubtitleStyle } from '@/types';
+import { Caption, SubtitleStyle, AspectRatio } from '@/types';
 import { ExportService } from '@/services/export.service';
 
 interface ExportModalProps {
@@ -12,6 +12,7 @@ interface ExportModalProps {
   captions: Caption[];
   style: SubtitleStyle;
   projectTitle: string;
+  aspectRatio?: AspectRatio;
 }
 
 export const ExportModal: React.FC<ExportModalProps> = ({
@@ -21,6 +22,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   captions,
   style,
   projectTitle,
+  aspectRatio = '16:9',
 }) => {
   const [isExportingVideo, setIsExportingVideo] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -63,7 +65,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           setProgress(pct);
           setStatusMessage(status);
         },
-        `${sanitizedTitle}-captioned.webm`
+        `${sanitizedTitle}-captioned.webm`,
+        aspectRatio
       );
     } catch (err: any) {
       console.error('Video export error:', err);

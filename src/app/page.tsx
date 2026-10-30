@@ -112,9 +112,11 @@ export default function LandingPage() {
       videoUrl,
       thumbnailUrl,
       captions: initialCaptions || MediaService.SAMPLE_CAPTIONS,
+      originalCaptions: initialCaptions || MediaService.SAMPLE_CAPTIONS,
       style: STYLE_PRESETS[0],
       sourceLang: 'en',
-      targetLang: 'es',
+      targetLang: 'en',
+      aspectRatio: '16:9',
     };
 
     storageService.saveProject(newProject);

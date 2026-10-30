@@ -1,4 +1,4 @@
-import { Caption, SubtitleStyle } from '../types';
+import { Caption, SubtitleStyle, AspectRatio } from '../types';
 
 export class ExportService {
   /**
@@ -93,7 +93,8 @@ export class ExportService {
     captions: Caption[],
     style: SubtitleStyle,
     onProgress: (percent: number, status: string) => void,
-    outputFilename = 'lingosync-captioned-video.webm'
+    outputFilename = 'lingosync-captioned-video.webm',
+    aspectRatio: AspectRatio = '16:9'
   ): Promise<void> {
     return new Promise(async (resolve, reject) => {
       try {
@@ -101,8 +102,19 @@ export class ExportService {
           throw new Error('Video duration is invalid or video has not loaded.');
         }
 
-        const width = videoElement.videoWidth || 1280;
-        const height = videoElement.videoHeight || 720;
+        let width = 1280;
+        let height = 720;
+        if (aspectRatio === '9:16') {
+          width = 720;
+          height = 1280;
+        } else if (aspectRatio === '1:1') {
+          width = 1080;
+          height = 1080;
+        } else if (aspectRatio === '4:5') {
+          width = 1080;
+          height = 1350;
+        }
+
         const duration = videoElement.duration;
 
         const canvas = document.createElement('canvas');
@@ -184,8 +196,29 @@ export class ExportService {
           const pct = Math.min(99, Math.round((time / duration) * 100));
           onProgress(pct, `Rendering video frames (${pct}%)...`);
 
-          // Draw base video
-          ctx.drawImage(videoElement, 0, 0, width, height);
+          // Fill dark canvas background
+          ctx.fillStyle = '#050506';
+          ctx.fillRect(0, 0, width, height);
+
+          // Calculate fit dimensions for chosen aspect ratio
+          const videoAspect = (videoElement.videoWidth || 16) / (videoElement.videoHeight || 9);
+          const targetAspect = width / height;
+
+          let drawW = width;
+          let drawH = height;
+          let drawX = 0;
+          let drawY = 0;
+
+          if (videoAspect > targetAspect) {
+            drawH = Math.round(width / videoAspect);
+            drawY = Math.round((height - drawH) / 2);
+          } else {
+            drawW = Math.round(height * videoAspect);
+            drawX = Math.round((width - drawW) / 2);
+          }
+
+          // Draw base video centered
+          ctx.drawImage(videoElement, drawX, drawY, drawW, drawH);
 
           // Find active caption
           const activeCaption = captions.find((c) => time >= c.start && time <= c.end);
